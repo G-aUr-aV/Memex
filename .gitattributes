@@ -1,0 +1,5 @@
+# Append-only log: keep both sides' entries when two machines add to it.
+wiki/log.md merge=union
+# Generated indexes: union-merge to avoid conflicts; the SessionStart hook regenerates them afterwards.
+wiki/index.md merge=union
+wiki/*/*[[:space:]]Index.md merge=union

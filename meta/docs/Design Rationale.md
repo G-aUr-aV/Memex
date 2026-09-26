@@ -1,0 +1,48 @@
+---
+type: doc
+---
+# Design Rationale
+
+Why Memex works the way it does. Memex implements Andrej Karpathy's **LLM Wiki** pattern. An agent reads each source once, compiles it into a persistent, interlinked markdown wiki, and keeps that wiki current, instead of re-retrieving document chunks on every question (RAG). The rules below come from Karpathy's gist, the practitioner reports in its discussion, open-source implementations, and research on agent memory. They're here so you can change them knowingly.
+
+## The pattern in one paragraph
+There are three layers: **immutable raw sources** → an **LLM-owned wiki** → a **schema** (`CLAUDE.md`) that makes the agent a disciplined maintainer. There are three operations: **ingest** (read a source, update every affected page, index and log), **query** (answer from the wiki with citations and file good answers back) and **lint** (health checks). The human curates sources, asks questions and does the thinking; the agent does the bookkeeping. Karpathy frames it as a descendant of Vannevar Bush's Memex (1945), a personal store of documents joined by associative trails. The LLM solves the part Bush couldn't: who does the maintenance. Hence the name.
+
+## Rules and what they guard against
+
+| Rule | Guards against | Basis |
+|---|---|---|
+| Short, stable `CLAUDE.md` (under 200 lines), with detail in path-scoped rules and skills | schema bloat; rules ignored mid-task | practitioners call the schema "the real product"; Claude Code's memory docs recommend staying under ~200 lines |
+| One source at a time; never ingest in parallel | near-duplicate pages; index and log races | Karpathy ingests one at a time; practitioners saw near-duplicates from parallel backfills |
+| Triage before writing (New / Update / Disputed / No material) | thin sources bloating the wiki | a shared lesson across open-source implementations |
+| Every factual line cites `raw/`; lint checks quotes against the source | contamination; summary-of-summary drift | the worst failure is an unsupported claim that later pages cite. The same model can't reliably catch its own errors, so the check must be deterministic |
+| Supersede, never delete; `(as of)` on volatile facts | silently overwritten history; stale facts | temporal-memory research invalidates old facts instead of deleting them (Zep/Graphiti, Mem0) |
+| Conflicts go in `> [!conflict]` and are never resolved silently | lock-in to one view | keeping minority hypotheses plus scheduled audits (Memory as Metabolism) |
+| Surgical edits only; the guard blocks overwrites that shrink a page >30% | "context collapse" from full rewrites | ACE found monolithic rewrites collapsed context; incremental edits didn't |
+| One entity = one page; search and check aliases before creating | duplicate entities | duplicates appear once the index no longer fits in one read |
+| `reviewed:` stays empty until you read the page | blind trust in AI-written pages | the review-gate pattern from community implementations |
+| Human zones (`journal/`, `notes/`, `> [!mine]`) enforced by a hook | cognitive debt; the agent overwriting your voice | understanding needs effortful engagement (generation effect, evergreen notes) |
+| Hard rules live in hooks and permissions, not only prose | "CLAUDE.md is advice, not enforcement" | Claude Code docs: CLAUDE.md is context; only hooks and permissions block actions |
+| Query is read-only; `/save` files answers explicitly; hubs collect links | self-citing speculation; answer pages that don't generalize | question-driven index pages beat pages that merely record answers (Training a Knowledge Base, 2026) |
+| Index generated from one-line summaries; `hot.md` loaded at session start | index drift; re-explaining context every session | small always-loaded core, rest on demand (MemGPT memory tiers; context-rot findings) |
+| Weekly deterministic lint, monthly deep audit | stale cross-references, the most-cited failure mode | practitioner reports; Karpathy's own periodic health checks |
+| Sources are data, connectors read-only, secrets scanned before commit | memory poisoning; leaks | memory-injection attacks on agents (MINJA, AgentPoison) |
+| Intent-driven capture; batch quick captures | slop from passive auto-ingestion of email and chat | practitioner reports |
+| One git commit per operation | irreversible bad edits | reviewing diffs is the cheapest review surface |
+| Add qmd search only past ~150 pages per section or when search misses | premature machinery | Karpathy ran about 100 sources on index files alone; measure before adding tools |
+
+## Trade-offs to know
+- **Cost**: compiling a wiki costs far more tokens than retrieval. A 2026 preregistered study found the wiki much better at connecting findings across sources, but it cost about two orders of magnitude more to build and ~21x more tokens per query than single-round RAG. So compile knowledge you revisit, and leave live state (ticket status, PR state) in its system of record.
+- **Scale**: the index alone works up to roughly 100–300 pages. Past that, use section indexes (already generated) and real search ([qmd](https://github.com/tobi/qmd), via `meta/tools/setup-qmd.sh`).
+- **Supervision vs friction**: `/ingest` is deep and discussed; `/inbox` is fast and batched. Use deep for anything that matters.
+- **Your own thinking**: the agent writes the wiki, but understanding comes from your `> [!mine]` takes and `notes/`. Keep writing a little yourself.
+
+## Sources
+- Karpathy, *LLM Wiki* (idea file, 2026-04-04): https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
+- Karpathy on his own LLM knowledge bases (2026-04-02): https://x.com/karpathy/status/2039805659525644595
+- Claude Code docs, memory, hooks and permissions: https://code.claude.com/docs/en/memory · https://code.claude.com/docs/en/hooks · https://code.claude.com/docs/en/permissions
+- Obsidian CLI: https://obsidian.md/help/cli · Bases: https://obsidian.md/help/bases/syntax
+- Agent memory: MemGPT [2310.08560](https://arxiv.org/abs/2310.08560) · Generative Agents [2304.03442](https://arxiv.org/abs/2304.03442) · CoALA [2309.02427](https://arxiv.org/abs/2309.02427) · A-MEM [2502.12110](https://arxiv.org/abs/2502.12110) · Zep/Graphiti [2501.13956](https://arxiv.org/abs/2501.13956) · Mem0 [2504.19413](https://arxiv.org/abs/2504.19413)
+- Structure and grounding: RAPTOR [2401.18059](https://arxiv.org/abs/2401.18059) · GraphRAG [2404.16130](https://arxiv.org/abs/2404.16130) · STORM [2402.14207](https://arxiv.org/abs/2402.14207) · ACE [2510.04618](https://arxiv.org/abs/2510.04618) · Voyager [2305.16291](https://arxiv.org/abs/2305.16291)
+- LLM-wiki studies (2026): cost comparison [2605.18490](https://arxiv.org/abs/2605.18490) · Memory as Metabolism [2604.12034](https://arxiv.org/abs/2604.12034) · Training a Knowledge Base [2608.21829](https://arxiv.org/abs/2608.21829)
+- Risks: model collapse [2305.17493](https://arxiv.org/abs/2305.17493) · MINJA [2503.03704](https://arxiv.org/abs/2503.03704)

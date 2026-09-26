@@ -1,0 +1,6 @@
+/* Memex: make human-owned and agent-flag callouts visually distinct (Obsidian 1.13 uses full CSS colors) */
+.callout[data-callout="mine"]      { --callout-color: #d68c1e; --callout-icon: lucide-user-pen; }
+.callout[data-callout="conflict"]  { --callout-color: #dc3c3c; --callout-icon: lucide-swords; }
+.callout[data-callout="inference"] { --callout-color: #8c6ec8; --callout-icon: lucide-lightbulb; }
+.callout[data-callout="brief"]     { --callout-color: #3c96c8; --callout-icon: lucide-sunrise; }
+.callout[data-callout="stale"]     { --callout-color: #969696; --callout-icon: lucide-clock-alert; }

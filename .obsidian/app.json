@@ -1,0 +1,16 @@
+{
+  "alwaysUpdateLinks": true,
+  "newLinkFormat": "shortest",
+  "useMarkdownLinks": false,
+  "attachmentFolderPath": "raw/assets",
+  "newFileLocation": "folder",
+  "newFileFolderPath": "inbox",
+  "showInlineTitle": true,
+  "propertiesInDocument": "visible",
+  "userIgnoreFilters": [
+    "raw/assets/",
+    "meta/lint/",
+    "meta/templates/",
+    ".trash/"
+  ]
+}

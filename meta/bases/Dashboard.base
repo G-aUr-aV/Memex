@@ -1,0 +1,150 @@
+filters:
+  and:
+    - file.ext == "md"
+    - not:
+        - file.inFolder("meta")
+        - file.inFolder(".trash")
+formulas:
+  age_days: ((now() - file.ctime) / 86400000).round(0)
+  days_since_contact: if(last_contact, ((today() - date(last_contact)) / 86400000).round(0), "")
+properties:
+  formula.age_days:
+    displayName: Age (days)
+  formula.days_since_contact:
+    displayName: Days since contact
+views:
+  - type: table
+    name: Inbox
+    filters:
+      and:
+        - file.inFolder("inbox")
+    order:
+      - file.name
+      - formula.age_days
+    sort:
+      - property: file.ctime
+        direction: ASC
+  - type: table
+    name: Review queue
+    filters:
+      and:
+        - file.inFolder("wiki")
+        - file.folder != "wiki"
+        - type != "index"
+        - reviewed.isEmpty()
+    order:
+      - file.name
+      - type
+      - domain
+      - confidence
+      - updated
+    sort:
+      - property: updated
+        direction: DESC
+    limit: 50
+  - type: table
+    name: Recently updated
+    filters:
+      and:
+        - file.inFolder("wiki")
+        - file.folder != "wiki"
+        - type != "index"
+        - file.mtime > now() - "7d"
+    order:
+      - file.name
+      - type
+      - domain
+      - summary
+    sort:
+      - property: file.mtime
+        direction: DESC
+  - type: table
+    name: Active projects
+    filters:
+      and:
+        - type == "project"
+        - status != "done"
+        - status != "dropped"
+    groupBy:
+      property: domain
+      direction: ASC
+    order:
+      - file.name
+      - status
+      - target
+      - summary
+  - type: table
+    name: People to reconnect
+    filters:
+      and:
+        - type == "person"
+        - last_contact
+        - date(last_contact) < today() - "30d"
+    order:
+      - file.name
+      - relationship
+      - last_contact
+      - formula.days_since_contact
+    sort:
+      - property: last_contact
+        direction: ASC
+  - type: table
+    name: Birthdays this month
+    filters:
+      and:
+        - type == "person"
+        - birthday
+        - date(birthday).month == today().month
+    order:
+      - file.name
+      - birthday
+      - relationship
+  - type: table
+    name: Proposed decisions
+    filters:
+      and:
+        - type == "decision"
+        - status == "proposed"
+    order:
+      - file.name
+      - date
+      - project
+      - summary
+  - type: table
+    name: Renewals soon
+    filters:
+      and:
+        - renewal_date
+        - date(renewal_date) <= today() + "30d"
+    order:
+      - file.name
+      - amount
+      - cycle
+      - renewal_date
+  - type: table
+    name: Stale pages
+    filters:
+      and:
+        - file.inFolder("wiki")
+        - file.folder != "wiki"
+        - type != "index"
+        - updated
+        - date(updated) < today() - "180d"
+        - status != "archived"
+        - status != "superseded"
+    order:
+      - file.name
+      - type
+      - updated
+      - summary
+  - type: table
+    name: Low confidence
+    filters:
+      and:
+        - file.inFolder("wiki")
+        - confidence == "low"
+    order:
+      - file.name
+      - type
+      - domain
+      - summary
