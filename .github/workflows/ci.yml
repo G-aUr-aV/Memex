@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.9", "3.12"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Shell syntax
+        run: bash -n meta/tools/setup.sh meta/tools/setup-qmd.sh .claude/hooks/session_start.sh
+      - name: JSON configs parse
+        run: |
+          python -m json.tool .claude/settings.json > /dev/null
+          python -m json.tool .codex/hooks.json > /dev/null
+      - name: Tests (temporary vault, fake HOME)
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@localhost"
+          python meta/tools/test_memex.py
+      - name: Lint the vault
+        run: python meta/tools/lint.py

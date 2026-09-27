@@ -5,7 +5,7 @@ type: home
 
 > [!tip] Daily loop
 > **Morning** `/today` · **During the day** capture everything into `inbox/` (Web Clipper, drag & drop, the daily note's *Captures*) · **Evening** `/close` · **Friday** `/weekly` · **Anytime** `/ask …`, `/ingest …`, `/prep …`
-> Run these in Claude Code opened on this vault's folder. Full guide: [[Memex Manual]].
+> Run these in Claude Code, Codex (`$today`, `$ask` …) or Hermes opened on this vault's folder. Full guide: [[Memex Manual]].
 >
 > **New here?** Run `bash meta/tools/setup.sh`, then make Karpathy's [LLM Wiki gist](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) your first `/ingest` (steps in [[Memex Manual]] → First-time setup). Why it's built this way: [[Design Rationale]].
 
