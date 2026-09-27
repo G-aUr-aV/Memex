@@ -21,4 +21,4 @@ Target: $ARGUMENTS
    - `Origin: filed from conversation on YYYY-MM-DD`
    Link only pages that exist.
 4. **Back-link**: add one line under `## Connections` on the 1-3 most relevant basis pages pointing to the new page. If this question took many searches, update or create a hub or topic page that collects the members.
-5. **Finish**: `python3 meta/tools/build_index.py`; append `## [YYYY-MM-DD] save | <Title>` with bullets; run `python3 meta/tools/lint.py --quick`; `git add -A . && git commit -q -m "save: <Title>"`. Reply with the page link in one line.
+5. **Finish**: append `## [YYYY-MM-DD] save | <Title>` with bullets, then `python3 meta/tools/memex.py commit "save: <Title>"`. Reply with the page link in one line.

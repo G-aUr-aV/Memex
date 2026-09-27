@@ -30,6 +30,7 @@
       "Bash(obsidian open *)",
       "Bash(obsidian command id=editor:download-attachments)",
       "Bash(python3 meta/tools/*)",
+      "Bash(memex *)",
       "Bash(defuddle parse *)",
       "Bash(git status*)",
       "Bash(git diff*)",
@@ -53,7 +54,6 @@
       "Edit(/meta/tools/**)",
       "Edit(/meta/templates/**)",
       "Edit(/.obsidian/**)",
-      "Bash(obsidian delete*)",
       "Bash(obsidian eval*)",
       "Bash(obsidian plugin*)",
       "Bash(git push*)",
@@ -77,7 +77,8 @@
       "Bash(gh issue create*)",
       "Bash(gh issue comment*)",
       "Bash(gh issue close*)",
-      "Bash(gh repo delete*)"
+      "Bash(gh repo delete*)",
+      "Bash(obsidian delete*)"
     ]
   },
   "hooks": {
@@ -94,7 +95,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
         "hooks": [
           {
             "type": "command",

@@ -24,4 +24,4 @@ Do the steps in order and show progress. Every connector call here is **read-onl
     - stale engineering facts (systems never verified against code)
     - up to 5 **candidate insights** as complete-sentence claim titles for `notes/`, each with 2-3 supporting links
     - flashcards awaiting approval
-11. Build the index, log `## [YYYY-MM-DD] weekly | <YYYY-Www>` with bullets, and commit.
+11. Log `## [YYYY-MM-DD] weekly | <YYYY-Www>` with bullets, then `python3 meta/tools/memex.py commit "weekly: <YYYY-Www>"`.

@@ -22,19 +22,22 @@ There are three layers: **immutable raw sources** → an **LLM-owned wiki** → 
 | One entity = one page; search and check aliases before creating | duplicate entities | duplicates appear once the index no longer fits in one read |
 | `reviewed:` stays empty until you read the page | blind trust in AI-written pages | the review-gate pattern from community implementations |
 | Human zones (`journal/`, `notes/`, `> [!mine]`) enforced by a hook | cognitive debt; the agent overwriting your voice | understanding needs effortful engagement (generation effect, evergreen notes) |
-| Hard rules live in hooks and permissions, not only prose | "CLAUDE.md is advice, not enforcement" | Claude Code docs: CLAUDE.md is context; only hooks and permissions block actions |
-| Query is read-only; `/save` files answers explicitly; hubs collect links | self-citing speculation; answer pages that don't generalize | question-driven index pages beat pages that merely record answers (Training a Knowledge Base, 2026) |
+| Hard rules live in hooks and permissions, not only prose | "CLAUDE.md is advice, not enforcement" | Claude Code docs: CLAUDE.md is context; only hooks and permissions block actions; one guard script serves Claude Code, Codex and Hermes, and a pre-commit hook backs it up |
+| Answering is read-only; only reusable answers are filed (through `/save`); hubs collect links | self-citing speculation; answer pages that don't generalize | question-driven index pages beat pages that merely record answers (Training a Knowledge Base, 2026) |
 | Index generated from one-line summaries; `hot.md` loaded at session start | index drift; re-explaining context every session | small always-loaded core, rest on demand (MemGPT memory tiers; context-rot findings) |
 | Weekly deterministic lint, monthly deep audit | stale cross-references, the most-cited failure mode | practitioner reports; Karpathy's own periodic health checks |
 | Sources are data, connectors read-only, secrets scanned before commit | memory poisoning; leaks | memory-injection attacks on agents (MINJA, AgentPoison) |
 | Intent-driven capture; batch quick captures | slop from passive auto-ingestion of email and chat | practitioner reports |
 | One git commit per operation | irreversible bad edits | reviewing diffs is the cheapest review surface |
+| Agents act without asking inside the ownership rules, and report afterwards | permission fatigue; a wiki that only grows when you remember to ask | the owner's choice: safety comes from deterministic hooks, reversible history and the review queue instead of prompts |
+| One agent-neutral CLI (`memex`) for reads and writes from other projects | a separate integration per agent; writes that skip the rules | `AGENTS.md` and `SKILL.md` are shared by Claude Code, Codex and Hermes, and one CLI needs only one permission rule per agent |
 | Add qmd search only past ~150 pages per section or when search misses | premature machinery | Karpathy ran about 100 sources on index files alone; measure before adding tools |
 
 ## Trade-offs to know
 - **Cost**: compiling a wiki costs far more tokens than retrieval. A 2026 preregistered study found the wiki much better at connecting findings across sources, but it cost about two orders of magnitude more to build and ~21x more tokens per query than single-round RAG. So compile knowledge you revisit, and leave live state (ticket status, PR state) in its system of record.
 - **Scale**: the index alone works up to roughly 100–300 pages. Past that, use section indexes (already generated) and real search ([qmd](https://github.com/tobi/qmd), via `meta/tools/setup-qmd.sh`).
 - **Supervision vs friction**: `/ingest` is deep and discussed; `/inbox` is fast and batched. Use deep for anything that matters.
+- **Autonomy vs oversight**: agents no longer ask before writing, so review happens afterwards (the Review queue, `git log`). The guard and pre-commit hook keep the irreversible cases out, and `git revert` undoes the rest.
 - **Your own thinking**: the agent writes the wiki, but understanding comes from your `> [!mine]` takes and `notes/`. Keep writing a little yourself.
 
 ## Sources
