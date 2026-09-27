@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
-"""Git pre-commit guard for Memex: block commits that contain likely secrets or card numbers.
-Installed as .git/hooks/pre-commit. Bypass (only if you are sure it's a false positive): git commit --no-verify
+"""Git pre-commit guard for Memex, the backstop for every agent and editor:
+  - block commits that contain likely secrets or card numbers
+  - block commits that modify, rename or delete an existing raw/ source (raw/ is create-only)
+Installed as .git/hooks/pre-commit. Bypass (only if you are sure, e.g. redacting a raw file yourself):
+git commit --no-verify
 """
 import subprocess
 import sys
@@ -10,6 +13,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lint import SECRETS, CARD, luhn  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
+prefix = subprocess.run(["git", "rev-parse", "--show-prefix"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+changed = subprocess.run(["git", "diff", "--cached", "--name-status", "-M", "--", "."],
+                         cwd=ROOT, capture_output=True, text=True).stdout.splitlines()
+VERB = {"M": "modified", "D": "deleted", "R": "renamed"}
+raw_hits = []
+for line in changed:
+    status, *paths = line.split("\t")
+    if status[:1] in "MDR" and paths and paths[0].startswith(prefix + "raw/"):
+        raw_hits.append(f"{paths[0][len(prefix):]} ({VERB[status[0]]})")
+if raw_hits:
+    print("Memex pre-commit: commit blocked — raw/ sources are immutable:\n  " + "\n  ".join(raw_hits), file=sys.stderr)
+    print("Restore them (git restore --staged --worktree <file>) and annotate the wiki source page instead.", file=sys.stderr)
+    sys.exit(1)
 files = subprocess.run(["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"],
                        cwd=ROOT, capture_output=True, text=True).stdout.splitlines()
 hits = []

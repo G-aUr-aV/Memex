@@ -26,4 +26,4 @@ Broken links with exactly one obvious target, missing required frontmatter you c
 - `--deep` only: pick 5 random factual pages and have the `fact-checker` subagent trace every claim to its source. Report the supported ratio and fix clear misquotes surgically (log each one).
 
 ## 4. Finish
-Append the judgment list to the report file under `## For the owner`. Append `## [YYYY-MM-DD] lint | <n> issues, <m> auto-fixed` with bullets to `wiki/log.md`, then `git add -A . && git commit -q -m "lint: <date>"`. Reply with a summary of 10 lines or fewer and the report link.
+Append the judgment list to the report file under `## For the owner`. Append `## [YYYY-MM-DD] lint | <n> issues, <m> auto-fixed` with bullets to `wiki/log.md`, then `python3 meta/tools/memex.py commit "lint: <date>"` (add `--force` if the only errors left are ones you listed for the owner). Reply with a summary of 10 lines or fewer and the report link.

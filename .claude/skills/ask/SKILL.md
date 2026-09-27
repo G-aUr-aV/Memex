@@ -17,4 +17,4 @@ Question: $ARGUMENTS
    - End with **Gaps & confidence**: what Memex doesn't know, any stale `(as of)` facts, and sources worth adding.
    - If the answer isn't in Memex, say so plainly after searching index and full text. Answer from general knowledge only if the owner wants that, and label it as such.
 5. **High stakes** (a decision, something the owner will send to others, health or finance): before answering, have the `fact-checker` subagent verify each claim against its cited source, and drop or flag unsupported ones.
-6. **Don't write files.** If the answer is reusable (a comparison, analysis, decision rationale, or an answer that took more than 3 searches), end with: "Save this to Memex? (/save)".
+6. **Answering doesn't write files.** If the answer is reusable (a comparison, analysis, decision rationale, or an answer that took more than 3 searches), file it yourself with the `/save` procedure and end with the new page's link. Don't save one-line lookups or answers that are mostly general knowledge.

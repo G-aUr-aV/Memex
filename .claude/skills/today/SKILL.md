@@ -15,4 +15,4 @@ description: Morning brief — create or refresh today's daily note Brief with m
    - If it's after 12:00, include only Meetings and Due.
 3. **Write the brief** inside the `> [!brief]` callout. Every line starts with `> `, and the block stays under 25 lines:
    `**Focus** (suggest top 3; the owner decides) · **Meetings** (time — title — prep bullets) · **Carry-over** · **Due** (follow-ups, birthdays, renewals) · **Inbox**: N items`.
-4. Append `## [YYYY-MM-DD] today | brief` to `wiki/log.md` and commit (`git add -A . && git commit -q -m "today: brief"`). Reply with the brief in chat as well.
+4. Append `## [YYYY-MM-DD] today | brief` to `wiki/log.md` and run `python3 meta/tools/memex.py commit "today: brief"`. Reply with the brief in chat as well.
