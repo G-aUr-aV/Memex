@@ -99,4 +99,5 @@ Templates for every type: `meta/templates/wiki/`. Read the matching template bef
 ## Agent notes (Codex, Hermes)
 - Skills are invoked as `/ingest` in Claude Code and Hermes, and as `$ingest` in Codex. In a skill, `$ARGUMENTS` means the text the owner typed after the skill's name.
 - A skill line of the form `` !`python3 meta/tools/context.py …` `` is live context that Claude Code fills in. If you see the command itself, run it first.
+- **Changing the framework itself** (tools, hooks, skills, this schema) only when the owner asks: read `meta/docs/Architecture.md` first and run `python3 meta/tools/test_memex.py` afterwards.
 - The `source-reader` and `fact-checker` subagents are Claude Code only. Do their job inline: read long sources in sections, and re-check each high-stakes claim against its cited raw section yourself.
