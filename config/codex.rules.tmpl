@@ -1,0 +1,235 @@
+# Codex rules for the Memex vault (loaded when this project is trusted).
+# allow = runs without a prompt (outside the sandbox); forbidden = never runs.
+# Rendered from the Memex framework by `memex sync`; edit config/codex.rules.tmpl there, not here.
+# Writes are still checked by the framework's hooks/guard.py (see .codex/hooks.json).
+
+prefix_rule(
+    pattern = ["python3", "{{MEMEX_PY}}"],
+    decision = "allow",
+    justification = "Memex CLI from the framework: commits and trash moves stay inside the vault, never pushes",
+)
+prefix_rule(
+    pattern = ["memex"],
+    decision = "allow",
+    justification = "Memex CLI (installed by setup.sh)",
+)
+prefix_rule(
+    pattern = ["obsidian", "search"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "search:context"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "backlinks"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "links"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "orphans"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "deadends"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "unresolved"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "aliases"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "properties"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "tags"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "tasks"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "daily:read"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "daily:path"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "daily:append"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "base:query"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "read"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "outline"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "move"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "rename"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "open"],
+    decision = "allow",
+    justification = "Obsidian CLI talks to the running app (outside the sandbox)",
+)
+prefix_rule(
+    pattern = ["obsidian", "command", "id=editor:download-attachments"],
+    decision = "allow",
+    justification = "save a clip's images into raw/assets/",
+)
+prefix_rule(
+    pattern = ["defuddle", "parse"],
+    decision = "allow",
+    justification = "fetch a web page into inbox/ as markdown",
+)
+prefix_rule(
+    pattern = ["gh", "search"],
+    decision = "allow",
+    justification = "GitHub, read-only (/weekly)",
+)
+prefix_rule(
+    pattern = ["gh", "pr", "list"],
+    decision = "allow",
+    justification = "GitHub, read-only (/weekly)",
+)
+prefix_rule(
+    pattern = ["gh", "pr", "view"],
+    decision = "allow",
+    justification = "GitHub, read-only (/weekly)",
+)
+prefix_rule(
+    pattern = ["gh", "issue", "list"],
+    decision = "allow",
+    justification = "GitHub, read-only (/weekly)",
+)
+prefix_rule(
+    pattern = ["gh", "issue", "view"],
+    decision = "allow",
+    justification = "GitHub, read-only (/weekly)",
+)
+prefix_rule(
+    pattern = ["gh", "repo", "view"],
+    decision = "allow",
+    justification = "GitHub, read-only (/weekly)",
+)
+prefix_rule(
+    pattern = ["git", "remote", "add"],
+    decision = "forbidden",
+    justification = "The Memex vault is local-only: it never gets a remote",
+)
+prefix_rule(
+    pattern = ["git", "remote", "set-url"],
+    decision = "forbidden",
+    justification = "The Memex vault is local-only: it never gets a remote",
+)
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "forbidden",
+    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+)
+prefix_rule(
+    pattern = ["gh", "pr", "merge"],
+    decision = "forbidden",
+    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+)
+prefix_rule(
+    pattern = ["gh", "pr", "create"],
+    decision = "forbidden",
+    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+)
+prefix_rule(
+    pattern = ["gh", "pr", "comment"],
+    decision = "forbidden",
+    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+)
+prefix_rule(
+    pattern = ["gh", "pr", "review"],
+    decision = "forbidden",
+    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+)
+prefix_rule(
+    pattern = ["gh", "pr", "close"],
+    decision = "forbidden",
+    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+)
+prefix_rule(
+    pattern = ["gh", "issue", "create"],
+    decision = "forbidden",
+    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+)
+prefix_rule(
+    pattern = ["gh", "issue", "comment"],
+    decision = "forbidden",
+    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+)
+prefix_rule(
+    pattern = ["gh", "issue", "close"],
+    decision = "forbidden",
+    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+)
+prefix_rule(
+    pattern = ["gh", "repo", "delete"],
+    decision = "forbidden",
+    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+)
+prefix_rule(
+    pattern = ["gh", "api"],
+    decision = "forbidden",
+    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+)
+prefix_rule(
+    pattern = ["obsidian", "delete"],
+    decision = "forbidden",
+    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+)
+prefix_rule(
+    pattern = ["obsidian", "eval"],
+    decision = "forbidden",
+    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+)
+prefix_rule(
+    pattern = ["obsidian", "plugin"],
+    decision = "forbidden",
+    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+)

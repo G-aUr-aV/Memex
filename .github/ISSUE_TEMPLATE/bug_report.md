@@ -18,6 +18,6 @@ labels: bug
 - OS:
 - Python (`python3 --version`):
 - Obsidian version, and whether the CLI is on:
-- Output of `python3 meta/tools/test_memex.py` (last lines):
+- Output of `python3 tools/test_memex.py` (last lines):
 
 <!-- Please don't paste personal vault content, tokens or real names. -->

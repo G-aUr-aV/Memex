@@ -1,0 +1,27 @@
+{
+  "default": ["engineering", "learning", "personal"],
+  "domains": {
+    "engineering": {
+      "title": "Engineering Index",
+      "summary": "The owner's own engineering: side projects, open source, tools, freelance, career",
+      "blurb": "Your own engineering: side projects, open source, repos, tools, decisions, career.",
+      "folders": ["projects", "systems", "decisions", "playbooks", "incidents", "concepts", "people", "career", "syntheses", "sources"],
+      "color": 14701138
+    },
+    "learning": {
+      "title": "Learning Index",
+      "summary": "transferable knowledge",
+      "note": "Keep it shareable.",
+      "blurb": "Transferable knowledge: topics, concepts, tools, papers, articles, courses.",
+      "folders": ["topics", "concepts", "entities", "syntheses", "sources"],
+      "color": 5431473
+    },
+    "personal": {
+      "title": "Personal Index",
+      "summary": "life",
+      "blurb": "Life: projects, areas (health, finance, home), goals, people, ideas, reflections.",
+      "folders": ["projects", "areas", "goals", "people", "ideas", "reflections", "syntheses", "sources"],
+      "color": 11621088
+    }
+  }
+}

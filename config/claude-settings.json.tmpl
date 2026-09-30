@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Edit(/wiki/**)",
+      "Edit(/raw/**)",
+      "Edit(/inbox/**)",
+      "Edit(/journal/**)",
+      "Edit(/outputs/**)",
+      "Edit(/meta/lint/**)",
+      "Bash(memex *)",
+      "Bash(memex)",
+      "Bash(obsidian search *)",
+      "Bash(obsidian search:context *)",
+      "Bash(obsidian backlinks *)",
+      "Bash(obsidian links *)",
+      "Bash(obsidian orphans*)",
+      "Bash(obsidian deadends*)",
+      "Bash(obsidian unresolved*)",
+      "Bash(obsidian aliases*)",
+      "Bash(obsidian properties*)",
+      "Bash(obsidian tags*)",
+      "Bash(obsidian tasks*)",
+      "Bash(obsidian daily:read*)",
+      "Bash(obsidian daily:path*)",
+      "Bash(obsidian daily:append *)",
+      "Bash(obsidian base:query *)",
+      "Bash(obsidian read *)",
+      "Bash(obsidian outline *)",
+      "Bash(obsidian move *)",
+      "Bash(obsidian rename *)",
+      "Bash(obsidian open *)",
+      "Bash(obsidian command id=editor:download-attachments)",
+      "Bash(defuddle parse *)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(gh search *)",
+      "Bash(gh pr list *)",
+      "Bash(gh pr view *)",
+      "Bash(gh issue list *)",
+      "Bash(gh issue view *)",
+      "Bash(gh repo view *)"
+    ],
+    "ask": [
+      "Edit(/Home.md)",
+      "Edit(/.memex/**)",
+      "Edit(/.obsidian/**)",
+      "Bash(obsidian eval*)",
+      "Bash(obsidian plugin*)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git reset*)",
+      "Bash(git checkout*)",
+      "Bash(git clean*)",
+      "Bash(rm *)",
+      "Bash(gh api *)"
+    ],
+    "deny": [
+      "Edit(/notes/**)",
+      "Edit(/AGENTS.md)",
+      "Edit(/CLAUDE.md)",
+      "Edit(/.memex/vault.json)",
+      "Edit(/.memex/state.json)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Bash(git push*)",
+      "Bash(git remote add*)",
+      "Bash(git remote set-url*)",
+      "Bash(gh pr merge*)",
+      "Bash(gh pr create*)",
+      "Bash(gh pr comment*)",
+      "Bash(gh pr review*)",
+      "Bash(gh pr close*)",
+      "Bash(gh issue create*)",
+      "Bash(gh issue comment*)",
+      "Bash(gh issue close*)",
+      "Bash(gh repo create*)",
+      "Bash(gh repo delete*)",
+      "Bash(obsidian delete*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{MEMEX}} context",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{GUARD}}",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

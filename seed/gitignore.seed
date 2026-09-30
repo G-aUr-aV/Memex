@@ -1,0 +1,16 @@
+# Obsidian UI state (changes constantly)
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/cache
+# Plugin data can hold API keys
+.obsidian/plugins/*/data.json
+.trash/
+.DS_Store
+# Claude Code personal overrides
+.claude/settings.local.json
+# Memex sync state and backups (the files rendered from the framework are listed in .git/info/exclude)
+.memex/state.json
+.memex/backup/
+# Large media you may not want in history (uncomment to exclude)
+# raw/assets/**/*.mp4
+# raw/assets/**/*.mov
