@@ -36,6 +36,7 @@ Memex/                      FRAMEWORK: code only. Clone it on every machine; pus
 | CLI | `tools/memex.py` | `path context search read capture rm commit ctx index lint init sync doctor hook` | agents in any project, skills, hooks, the shell |
 | Index, lint, context | `tools/build_index.py`, `tools/lint.py`, `tools/context.py` | generated indexes; deterministic checks; live context for skills | `memex index`, `memex lint`, `memex ctx`, `memex commit` |
 | Secrets | `tools/secretscan.py` | the patterns shared by lint, capture and pre-commit | — |
+| Setup skill | `.claude/skills/memex-setup/SKILL.md` (`.agents/skills` links to it) | lets an agent in a fresh clone install and verify Memex with no manual steps | `/memex-setup`, `$memex-setup`, or "set up Memex" |
 | Setup | `setup.sh` → `tools/vault.py setup` → `tools/integrate.py` | per machine: pick or create the vault, harden it, record the config, framework pre-commit, agent wiring | the owner, once per machine (safe to re-run) |
 | Global skill | `tools/memex.SKILL.md` | template for the `memex` skill installed for each agent | `integrate.py` |
 | Tests | `tools/test_memex.py` | framework copy + vault in a temp folder, fake HOME and git config | contributors, CI |

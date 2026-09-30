@@ -11,6 +11,7 @@ CLI, sync, domains, vault locations, and agent integration.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -247,9 +248,12 @@ class TestLocations(Sandbox):
     def test_default_is_memexvault_in_the_current_folder(self):
         where = self.tmp / "elsewhere"
         where.mkdir()
-        r = run(["bash", self.fw / "setup.sh", "--agents", "none"], where, self.fresh_env("home-default"), stdin="")
+        env = self.fresh_env("home-default")
+        r = run(["bash", self.fw / "setup.sh", "--agents", "none"], where, env, stdin="")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertTrue((where / "MemexVault" / ".memex" / "vault.json").exists())
+        shim = Path(env["HOME"]) / ".local/bin/memex"  # the CLI is installed even with no agent wired
+        self.assertEqual(Path(run([shim, "path"], self.tmp, env).stdout.strip()), (where / "MemexVault").resolve())
 
     def test_vault_inside_the_framework_is_ignored_there(self):
         env = self.fresh_env("home-nested")
@@ -288,6 +292,16 @@ class TestLocations(Sandbox):
         self.assertIn("inside another git repository", r.stderr)
         r = self.memex("init", str(self.fw), cwd=self.tmp)
         self.assertNotEqual(r.returncode, 0)
+
+    def test_refuses_a_folder_that_is_not_empty(self):
+        taken = self.tmp / "taken"
+        taken.mkdir()
+        (taken / "notes.txt").write_text("mine\n")
+        r = run(["bash", self.fw / "setup.sh", "--vault", taken, "--agents", "none"], self.tmp,
+                self.fresh_env("home-taken"), stdin="")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("isn't empty", r.stderr)
+        self.assertEqual(sorted(p.name for p in taken.iterdir()), ["notes.txt"])
 
     def test_framework_precommit_refuses_knowledge(self):
         p = self.fw / "wiki" / "x.md"
@@ -471,6 +485,33 @@ class TestCLI(Sandbox):
     def test_hermes_hook(self):
         r = self.memex("hook", "hermes", stdin=json.dumps({"cwd": str(self.tmp), "extra": {"is_first_turn": True}}))
         self.assertIn("memex search", json.loads(r.stdout)["context"])
+
+
+class TestSkills(unittest.TestCase):
+    """Skills and docs must only use commands and flags that exist (no sandbox needed)."""
+
+    def test_memex_commands_in_skills_exist(self):
+        usage = subprocess.run([PY, SRC / "tools" / "memex.py", "--help"], capture_output=True, text=True).stdout
+        commands = set(re.search(r"\{([a-z,]+)\}", usage).group(1).split(","))
+        files = list((SRC / "skills").glob("*/SKILL.md")) + list((SRC / ".claude" / "skills").glob("*/SKILL.md")) + \
+            [SRC / "tools" / "memex.SKILL.md", SRC / "schema" / "AGENTS.md.tmpl", SRC / "README.md"]
+        for f in files:
+            for cmd in re.findall(r"`memex ([a-z]+)", f.read_text()):
+                self.assertIn(cmd, commands, f"{f.relative_to(SRC)} uses unknown `memex {cmd}`")
+
+    def test_setup_skill_matches_setup_sh(self):
+        skill = SRC / ".claude" / "skills" / "memex-setup" / "SKILL.md"
+        self.assertTrue(skill.exists())
+        self.assertTrue(skill.read_text().startswith("---\nname: memex-setup\n"))
+        self.assertEqual(os.readlink(SRC / ".agents" / "skills"), "../.claude/skills")
+        setup = (SRC / "setup.sh").read_text()
+        used = set()
+        for doc in (skill, SRC / "README.md"):
+            for m in re.finditer(r"bash setup\.sh([^`#\n)]*)", doc.read_text()):
+                used |= set(re.findall(r"(--[a-z-]+)", m.group(1)))
+        self.assertIn("--vault", used)
+        for flag in used:
+            self.assertIn(f"{flag})", setup, f"docs use unknown setup.sh flag {flag}")
 
 
 class TestIntegration(Sandbox):

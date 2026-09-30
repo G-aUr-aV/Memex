@@ -332,17 +332,22 @@ def main():
         sys.exit(f"unknown agent(s): {', '.join(bad)} (use claude, codex, hermes)")
     if not a.remove and state.get("vault") and state["vault"] != V:
         say(f"moving the agent wiring from {state['vault']} to this vault")
-    if not agents:
-        say("no agents selected; skipped agent wiring")
-        return
-    shim(a.remove and set(agents) >= set(x for x in ("claude", "codex", "hermes") if x in state))
-    for agent in agents:
-        {"claude": claude, "codex": codex, "hermes": hermes}[agent](state, a.remove)
-        if a.remove:
+    wire = {"claude": claude, "codex": codex, "hermes": hermes}
+    if a.remove:
+        for agent in agents:
+            wire[agent](state, True)
             state.pop(agent, None)
-    if a.remove and not any(k in state for k in ("claude", "codex", "hermes")):
-        STATE.unlink(missing_ok=True)
+        if not any(k in state for k in wire):
+            shim(remove=True)
+            STATE.unlink(missing_ok=True)
+        else:
+            save_state(state)
     else:
+        shim()  # the CLI is agent-neutral: install it even when no agent is wired
+        if not agents:
+            say("no agents found or selected; installed only the memex CLI")
+        for agent in agents:
+            wire[agent](state, False)
         state["vault"] = V
         save_state(state)
     for n in notes:

@@ -17,6 +17,10 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 - **Local-only vault git**: repo-local `Memex Agent <memex-agent@localhost>` identity (also `author.*`/`committer.*`), no commit signing, local `core.hooksPath`, a pre-commit hook that also refuses other identities, and a pre-push hook that refuses everything. `memex commit` forces the identity through the environment (beating global and `includeIf` config), refuses to run with a remote or without its own repo, and adds a `Memex-Framework: <version> (<sha>)` trailer.
 - The framework's own pre-commit hook and a CI check refuse knowledge folders, vault config and embedded repos.
 - `memex init`, `memex sync [--check]`, `memex doctor [--fix]`, `memex ctx`, `memex index`, `memex lint`.
+- **`memex-setup` skill** (`.claude/skills/memex-setup`, also `.agents/skills` for Codex): an agent opened in a fresh clone installs Memex end to end. It checks prerequisites, picks the vault folder, runs setup without prompts, puts `memex` on PATH, verifies with doctor, lint and tests, and reports the Obsidian clicks left.
+- README rewritten: diagrams (overview, setup flow, rule propagation, guardrails), both setup paths, and a worked first session with real output.
+- Setup always installs the `memex` CLI, even when no agent is found.
+- Tests check that skills and docs only use real `memex` subcommands and `setup.sh` flags.
 - Guard: protects managed files and `.memex/vault.json`, refuses deleting or moving a folder that holds the vault, and blocks `git clean -ff/-x/-X` and `git stash --all` there.
 - MIT license.
 
