@@ -7,8 +7,8 @@ argument-hint: "<person | project | meeting title>"
 
 Target: $ARGUMENTS
 
-1. Resolve the target through the section indexes, `obsidian search query="$ARGUMENTS" path=wiki` and aliases. If it's ambiguous, ask.
-2. Read the target page and `obsidian backlinks file="<Page>"`. Then read the last 3 meeting sources that mention it, `decisions/` with `status: proposed` involving it, and the open loops on both the target page and the owner's side. For a person, also read the projects you share and the preferences recorded on their page.
+1. Resolve the target through the section indexes and `memex search $ARGUMENTS` (titles and aliases rank highest). If it's ambiguous, ask.
+2. Read the target page and `memex related "<Page>"`. Then read the last 3 meeting sources that mention it, `decisions/` with `status: proposed` involving it, and the open loops on both the target page and the owner's side. For a person, also read the projects you share and the preferences recorded on their page.
 3. Output (≤250 words, cite pages):
    - **Context**: their role and goals, or the project goal and current status (as of).
    - **Since last time**: dated bullets.

@@ -1,5 +1,8 @@
-# Append-only log: keep both sides' entries if two branches of the vault are ever merged.
+# Files several machines append to (when the vault syncs through a private remote): keep both sides' lines
+# instead of stopping on a conflict. hot.md is rewritten at the next /close, so duplicates there heal.
 wiki/log.md merge=union
+wiki/hot.md merge=union
+journal/daily/*.md merge=union
 # Generated indexes: union-merge to avoid conflicts; `memex index` regenerates them afterwards.
 wiki/index.md merge=union
 wiki/*/*[[:space:]]Index.md merge=union

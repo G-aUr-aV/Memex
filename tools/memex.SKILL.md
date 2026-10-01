@@ -8,7 +8,8 @@ description: Read and write the owner's Memex knowledge base ({{VAULT}}) from an
 
 ## Read
 - `memex search <terms>` searches wiki pages by title, alias and text. Add `--in all` to include raw sources, the journal and notes.
-- `memex read "<Page>"` prints a page. It takes a page name, `[[link]]` or vault path.
+- `memex read "<Page>"` prints a page (name, `[[link]]`, alias or path). Search shows each page's length: for pages over 150 lines, `memex outline "<Page>"` lists the headings and `memex read "<Page>#<Heading>"` prints one section. `memex related "<Page>"` shows what links in and out.
+- When a session starts in a repo that has a project or system page (`repo:` in its frontmatter), you get that page's summary, open loops and decisions automatically.
 - `memex context` shows the current focus, open loops, recent log and inbox.
 - Cite what you use as `[[Page]]`. If Memex has nothing, say so and continue.
 
@@ -30,4 +31,4 @@ EOF_NOTE
 - **Small direct fix** (a wrong fact the owner just corrected, a status that changed, a broken link): read `{{VAULT}}/AGENTS.md` first and follow it. Edit the page surgically, add a Timeline line, append a `wiki/log.md` entry, then run `memex commit "edit: <what>"`. `memex commit` rebuilds the indexes, runs lint and commits only the vault.
 - **Remove a file:** `memex rm "<vault path>"` moves a wiki, inbox or outputs file to `.trash/` after a backlink check, and git keeps it. Then log the removal and run `memex commit "delete: <what>"`. Superseding a page is usually better than deleting it.
 - The guard blocks writes to `raw/` (immutable), `notes/` and `journal/` (the owner's own) and edits to `> [!mine]` blocks. Don't try to work around it.
-- The vault's git repo is local-only: never add a remote to it or push it. `memex commit` commits as the vault's own identity.
+- Never add a git remote to the vault or push it yourself. `memex commit` commits as the vault's own identity and, if the owner attached a private remote, pushes. `memex remote set|remove`, `memex move` and `memex uninstall` are the owner's (the guard blocks them).

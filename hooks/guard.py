@@ -18,6 +18,10 @@ vault pass, and with no vault configured every call passes.
              changed inside the vault; .memex/vault.json and .memex/state.json belong to the owner and the tools
   container  the vault, or a folder holding it (such as the framework clone), is never deleted or moved;
              where the vault sits inside that folder, `git clean -ff/-x/-X` and `git stash --all` are blocked
+  owner-only attaching or changing the vault's remote, moving the vault and uninstalling Memex
+             (`memex remote set|remove`, `memex move`, `memex uninstall`, `setup.sh --remote|--uninstall|
+             --remove-agents`) are the owner's to run; agents hand over the command. In the vault, raw
+             `git push` and `git remote …` changes are blocked: `memex commit`/`memex push` sync it
 Shell commands get a best-effort check (rm, mv, sed -i, redirects, obsidian delete… naming protected
 files). Git history and the pre-commit hook remain the backstop.
 Exit 2 blocks the call and stderr is the reason: Claude Code, Codex and Hermes all accept this.
@@ -58,7 +62,9 @@ PLACEHOLDERS = {"", "(none yet)", "(none yet.)", "-"}
 SHRINK_EXEMPT = {"wiki/hot.md"}
 IMMUTABLE = {"raw", "notes", "journal"}            # never deleted, moved or overwritten by an agent
 CONTENT = IMMUTABLE | {"wiki", "inbox", "outputs"}  # deletions here go through `memex rm`
-OWNER_ONLY = {".memex/vault.json", ".memex/state.json"}
+OWNER_ONLY = {".memex/vault.json", ".memex/state.json", ".memex/sessions.jsonl", ".memex/backup.json",
+              ".memex/remote.json"}
+PYTHONS = {"python", "python3"}
 DELETE_VERBS = {"rm", "rmdir", "unlink", "shred", "trash", "srm"}
 WRITE_VERBS = {"truncate", "tee"}
 COPY_VERBS = {"cp", "install", "rsync", "ln"}
@@ -340,6 +346,42 @@ def deny_overwrite(w, how="overwrite"):
     check_owned(w[0])
 
 
+def q(arg):
+    """Quote an argument for the owner to paste, keeping a leading ~/ expandable."""
+    if arg.startswith("~/"):
+        return "~/" + (shlex.quote(arg[2:]) if arg[2:] else "")
+    return shlex.quote(arg)
+
+
+def owner_only(what, command):
+    raise Deny(f"{what} is the owner's decision, so agents don't run it. If the owner asked for it, tell them to run "
+               f"this in their terminal:  {command}")
+
+
+def check_owner_only(verb, args):
+    """memex remote set|remove, memex move, memex uninstall and the matching setup.sh / vault.py forms."""
+    if verb in PYTHONS and args and not args[0].startswith("-"):
+        verb, args = os.path.basename(args[0]), args[1:]
+    elif verb in SHELLS and args and os.path.basename(args[0]) == "setup.sh":
+        verb, args = "setup.sh", args[1:]
+    words = [a for a in args if not a.startswith("-")]
+    cmd = " ".join(["memex"] + [q(a) for a in args])
+    if verb in ("memex", "memex.py"):
+        if words[:1] == ["remote"] and words[1:2] and words[1] in ("set", "add", "remove", "rm"):
+            owner_only("Attaching or changing the vault's git remote", cmd)
+        if words[:1] in (["move"], ["uninstall"]):
+            owner_only("Moving the vault or uninstalling Memex", cmd)
+    elif verb == "vault.py" and words[:1] in (["uninstall"], ["move"], ["setup"]) and \
+            (words[0] != "setup" or any(a.split("=")[0] == "--remote" for a in args)):
+        owner_only("This vault operation", "python3 tools/vault.py " + " ".join(q(a) for a in args))
+    elif verb == "integrate.py" and "--remove" in args:
+        owner_only("Removing the agent wiring", "bash setup.sh --remove-agents")
+    elif verb == "setup.sh":
+        flags = {a.split("=")[0] for a in args}
+        if flags & {"--remote", "--uninstall", "--remove-agents"}:
+            owner_only("This setup step", "bash setup.sh " + " ".join(q(a) for a in args))
+
+
 def check_git(args, cwd):
     while args and args[0].startswith("-"):  # global options: git -C <dir> …, git -c k=v …
         if args[0] == "-C" and len(args) > 1:
@@ -361,6 +403,16 @@ def check_git(args, cwd):
         if holds_vault(cwd) and (forces >= 2 or "x" in short or "X" in short):
             raise Deny(f"this git clean could delete the Memex vault ({ROOT}), which sits inside this folder and "
                        "has no remote. Clean specific paths instead.")
+    if where(cwd, cwd):
+        if sub == "push":
+            raise Deny("the vault isn't pushed with git push: `memex commit` syncs it (or `memex push`), and only to "
+                       "the private remote the owner attached.")
+        if sub == "remote" and rest and rest[0] in ("add", "set-url", "remove", "rm", "rename", "set-head"):
+            owner_only("Changing the vault's git remotes", "memex remote set <url>   (or: memex remote remove)")
+        keys = [a for a in rest if not a.startswith("-")]
+        if sub == "config" and keys and keys[0].lower().startswith(("remote.", "core.hookspath", "url.")) and len(keys) > 1:
+            raise Deny(f"git config {keys[0]} in the vault changes where it pushes or which hooks run; only "
+                       "`memex remote set` (owner) and `memex doctor --fix` change these.")
     if sub == "stash" and holds_vault(cwd) and ("--all" in flags or "a" in short):
         raise Deny(f"git stash --all would sweep the Memex vault ({ROOT}), which sits inside this folder, into a stash.")
     if sub in ("rm", "mv", "checkout", "restore"):
@@ -395,6 +447,7 @@ def check_shell(cmd, cwd, depth=0):
         if not words:
             continue
         verb, args = os.path.basename(words[0]), words[1:]
+        check_owner_only(verb, args)
         if verb == "cd":
             target = os.path.expanduser(args[0]) if args else os.path.expanduser("~")
             cwd = target if os.path.isabs(target) else os.path.join(cwd, target)

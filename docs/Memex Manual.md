@@ -33,10 +33,17 @@ Every factual line in the wiki cites the raw source it came from, so you can alw
 
 ## 2. First-time setup (≈15 minutes)
 - [ ] **Easiest: let your agent do it.** Open Claude Code or Codex in the framework folder and say *"set up Memex"* (`/memex-setup`, or `$memex-setup` in Codex). It runs the steps below for you and verifies them, leaving only the Obsidian clicks.
-- [ ] **Or run the setup script yourself, once per machine**: `bash setup.sh` in the framework folder (the Memex repo you cloned). It asks where your vault lives, with the default being `MemexVault` in the folder you run it from. It then creates the vault as its own git repo that stays on this machine: no remote, pushes refused, every commit by `Memex Agent`, and a pre-commit hook that scans for secrets and refuses changes to existing `raw/` files. It connects Claude Code, Codex and Hermes, whichever are installed, so they can read and write Memex from any project without permission prompts (see *Any agent, any project* in §5). Then it tells you what's left (opening the vault in Obsidian, turning on its command-line interface). Use `--vault PATH` to skip the question, `--agents claude,codex` to choose agents and `--remove-agents` to undo the wiring.
+- [ ] **Or run the setup script yourself, once per machine**: `bash setup.sh` in the framework folder (the Memex repo you cloned). It asks where your vault lives, with the default being `MemexVault` in the folder you run it from. It then creates the vault as its own git repo that stays on this machine: no remote, pushes refused, every commit by `Memex Agent`, and a pre-commit hook that scans for secrets and refuses changes to existing `raw/` files. `--remote <url>` syncs it with your private git repository instead (below). It connects Claude Code, Codex and Hermes, whichever are installed, so they can read and write Memex from any project without permission prompts (see *Any agent, any project* in §5). Then it tells you what's left (opening the vault in Obsidian, turning on its command-line interface). Use `--vault PATH` to skip the question, `--agents claude,codex` to choose agents, `--remove-agents` to undo the wiring and `--uninstall` to remove Memex (§9).
 - [ ] **Open an agent in the vault folder**: Claude Code (desktop app → Code → choose this folder, or `cd <vault> && claude`), Codex (`codex`; trust the folder when it asks), or Hermes (`hermes`; start it once as `hermes --accept-hooks` to approve the Memex hooks). The schema, commands and hooks load there. Check: typing `/` (or `$` in Codex) shows `ingest`, `ask`, `today`…
 - [ ] **Install the Obsidian Web Clipper** browser extension. In its settings → Templates → *Import* → `clipper/Memex Inbox.json` from the framework folder. Drag it to the top of the list (it becomes the default) and pick this vault.
-- [ ] **Know where things sync.** The vault stays on this machine: the agent commits after every operation, and the vault's git repo refuses to push. On another machine, clone the framework and run setup there, which gives that machine its own vault. Framework improvements travel with `git pull` of the framework, and every vault re-renders its rules at its next session. **Back up the vault** (Time Machine, or `git bundle create <drive>/vault.bundle --all` now and then), since this disk holds the only copy.
+- [ ] **Know where things sync.**
+  - **By default the vault stays on this machine.** The agent commits after every operation, and the vault's git repo refuses to push. On another machine, clone the framework and run setup there, which gives that machine its own vault.
+  - **Framework improvements** travel with `git pull` of the framework, and every vault re-renders its rules at its next session.
+  - **Back up the vault** with `memex backup --to <drive>` (or Time Machine), since this disk holds the only copy.
+  - **Optional sync:** to use one vault on several machines, create an empty **private** repository and run `memex remote set <url>` here. On each other machine, run `bash setup.sh --remote <url>`.
+    - From then on, sessions pull when they start and every commit pushes.
+    - Public repositories are refused.
+    - Only you can attach or change the remote; agents are blocked from it.
 - [ ] **Do your first ingest: Karpathy's LLM Wiki gist.** It's the idea this vault is built on, so it makes a good first source and shows the whole loop.
   1. Open https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f and clip it with the Web Clipper (it lands in `inbox/`).
   2. In your agent, run `/ingest` on that file. Answer the three questions (why you saved it, what surprised you, what you doubt).
@@ -80,13 +87,14 @@ Already configured for you: links auto-update when files move, attachments go to
 | Command | Use it for | Example |
 |---|---|---|
 | `/ingest` | one important source, discussed with you (asks what surprised you and what you doubt) | `/ingest inbox/2026-09-26 Some Paper.md` |
+| `/harvest` | turning your recorded agent sessions in other repos into cited knowledge (`/close` runs it first) | `/harvest` |
 | `/inbox` | batch-processing quick captures and queued updates or deletions, without stopping to ask; one change summary at the end | `/inbox` |
 | `/ask` | any question; cited, states gaps, and files reusable answers as pages | `/ask what did we decide about retry handling and why?` |
 | `/save` | keeping a good answer or discussion as a page | `/save` |
 | `/prep` | 1:1s, meetings, stakeholder conversations | `/prep my manager` |
 | `/today` · `/close` · `/weekly` | the daily and weekly routines | — |
 | `/lint` | weekly health check (`--deep` monthly) | `/lint` |
-| `memex …` | from any project, in any agent or your shell: `search`, `read`, `capture`, `rm`, `commit` | `memex search retry storms` |
+| `memex …` | from any project, in any agent or your shell: `search`, `read`, `outline`, `related`, `capture`, `file`, `rm`, `commit`, `harvest`, `backup`, `doctor` | `memex search retry storms` |
 
 Plain requests work too: "add this to Memex", "what do I know about X", "prep me for tomorrow's arch review". In Codex, skills start with `$` (`$ingest`).
 
@@ -96,6 +104,12 @@ Plain requests work too: "add this to Memex", "what do I know about X", "prep me
 | Claude Code | `CLAUDE.md`, skills, rules, session and guard hooks | the `memex` skill and a Memex block in `~/.claude/CLAUDE.md` | pre-approved `memex`, vault reads, and edits of `wiki/ inbox/ outputs/`; guard hook in `~/.claude/settings.json` |
 | Codex | `AGENTS.md`, skills via `.agents/skills`, `.codex/hooks.json`, `.codex/rules/` | the `memex` skill (`~/.agents/skills`) and a block in `~/.codex/AGENTS.md` | vault trusted and writable (`~/.codex/config.toml`), `memex` allowed (`~/.codex/rules/`), guard hook in `~/.codex/hooks.json` |
 | Hermes | `AGENTS.md`, skills via `.agents/skills` (after `hermes skills trust`) | the `memex` skill and context injected on each session's first turn | guard and context hooks in `~/.hermes/config.yaml` |
+
+**Automatic memory.** Setup adds two global hooks for Claude Code and Codex:
+- **Session start, in any repo:** the agent gets what Memex knows about that repo (pages whose `repo:` matches, with open loops and decisions).
+- **Session end:** the session is recorded in `.memex/sessions.jsonl`.
+
+`/harvest` (run by `/close`) turns recorded sessions into verbatim digests in `raw/` and cites their durable parts into the wiki. Skip folders with `harvest.exclude` in `.memex/vault.json`, or turn this off with `"harvest": {"enabled": false}` (recall: `"recall": {"enabled": false}`).
 
 **Autonomy.** Agents don't ask before they read, capture, update or remove things in Memex. They act within the ownership rules and report what changed. You review afterwards through the Review queue, the log and `git log`. What they can't do is enforced in code for all three agents: `raw/` stays immutable, `notes/` and your journal stay yours, `[!mine]` blocks survive, deletions go to `.trash/`, and nothing is ever pushed.
 
@@ -144,6 +158,17 @@ The agent does the bookkeeping; understanding still comes from your own engageme
 
 ## 9. Maintenance & scaling
 - **Lint weekly, deep-lint monthly.** Lint auto-fixes only mechanical issues. Contradictions, stale claims and missing pages come to you as a list.
+- **Back up**: `memex backup` writes a verified git bundle, by default to `~/Memex Backups/<vault>`. Point it at another disk with `--to` or `"backup": {"dir": …}`. Restore with `git clone <bundle> <folder>`, then `bash setup.sh --vault <folder>`. The session context and `memex doctor` remind you after `backup.warn_days` (14).
+- **Sync** (if you attached a private remote): nothing to do day to day. `memex remote` shows its state.
+  - **Offline:** commits wait and go out with the next one.
+  - **`Sync: CONFLICT`** at session start means two machines changed the same lines. Say "resolve the sync conflict": the agent runs `memex pull --merge`, keeps both sides' facts, and commits.
+  - **Going back to local-only:** `memex remote remove`.
+- **Move the vault**: `memex move <new folder>`. It re-points the config, rendered files and agent permissions, then reminds you to reopen the folder in Obsidian.
+- **Uninstall**: say "uninstall Memex" to an agent in the framework folder (`/memex-uninstall`). It backs up and checks, then gives you one command:
+  - `memex uninstall` keeps the vault as plain Markdown + git;
+  - `memex uninstall --delete-vault --confirm "<name>"` deletes the vault after a verified backup bundle.
+
+  Both remove every agent instruction, hook, permission and skill Memex added, and finish with a check that nothing is left.
 - **Undo anything**: every operation is a commit. Say "revert the last ingest" or run `git log --oneline` then `git revert <sha>`.
 - **The index is generated** from each page's one-line summary (`memex index`), so it never drifts.
 - **Scale path**: today, the index plus Obsidian search is enough (Karpathy ran ~100 sources this way). When a section passes ~150 pages, or a search misses a page you know exists, run `bash tools/setup-qmd.sh` in the framework folder for local hybrid search.
@@ -151,7 +176,7 @@ The agent does the bookkeeping; understanding still comes from your own engageme
 
 ## 10. Folder map
 ```
-<your vault>/                 its own local-only git repo
+<your vault>/                 its own git repo (local-only unless you attach a private remote)
 ├── Home.md · Memex Manual.md · AGENTS.md (CLAUDE.md → AGENTS.md, read by every agent)
 ├── inbox/                 capture landing zone
 ├── raw/                   immutable sources: one folder per domain, plus assets/
@@ -163,16 +188,18 @@ The agent does the bookkeeping; understanding still comes from your own engageme
 ├── notes/                 yours: evergreen notes
 ├── outputs/               decks, drafts, briefs
 ├── meta/                  bases/ lint/ · templates/ docs/ (rendered from the framework)
-├── .memex/                vault.json (name, domains, commit identity) · local.md (this vault's rules)
+├── .memex/                vault.json (name, domains, commit identity) · local.md (this vault's rules) · remote.json (sync, this machine only)
 ├── .claude/ .agents/ .codex/   rendered from the framework: skills, agents, rules, settings, hooks
 └── .obsidian/             viewer settings
 ```
 Files rendered from the framework (`AGENTS.md`, `.claude/`, `.codex/`, `.agents/`, `meta/templates/`, `meta/docs/`, this Manual) aren't committed in the vault and can't be edited here. They're re-rendered whenever the framework changes.
 
 ## 11. Troubleshooting
+- **A scheduled or headless `claude -p` run can't edit anything** → Claude Code ignores a project's permission allow list until the folder has been trusted. Open `claude` in the vault once and accept the trust dialog.
 - **Commands missing** → the agent isn't opened on the vault folder. Codex: trust the folder (setup does this). Hermes: `hermes skills trust <vault>`.
 - **`memex: command not found`** → add `~/.local/bin` to your PATH, or use `python3 <framework>/tools/memex.py`.
-- **`memex commit` refuses** → it won't commit with a git remote, or when the vault isn't its own repo. Run `memex doctor` (and `memex doctor --fix`).
+- **`memex commit` refuses** → it won't commit with a git remote you didn't attach with `memex remote set`, or when the vault isn't its own repo. Run `memex doctor` (and `memex doctor --fix`).
+- **`push failed` after a commit** → the commit is safe and goes out with the next one. Pushes never prompt: load a passphrase-protected SSH key into `ssh-agent`, or set up a credential helper for https.
 - **"Memex guard: … rendered from the Memex framework"** → that file comes from the framework. Change it there, or put a vault-only rule in `.memex/local.md`.
 - **Hermes ignores the hooks** → it approves each new shell hook once: start it with `hermes --accept-hooks`, or check `hermes hooks list`.
 - **"obsidian" CLI errors** → the Obsidian app must be running (the first CLI call launches it).

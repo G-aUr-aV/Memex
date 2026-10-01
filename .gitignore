@@ -1,5 +1,5 @@
 # The framework holds no knowledge. A vault created inside this folder (setup.sh's default when you run it
-# from here) is its own local-only git repo and stays invisible to this one; setup.sh adds any other
+# from here) is its own git repo and stays invisible to this one; setup.sh adds any other
 # in-framework vault path to .git/info/exclude. The pre-commit hook and CI refuse these paths as well.
 /MemexVault/
 /wiki/

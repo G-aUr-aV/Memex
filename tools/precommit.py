@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Git pre-commit check for Memex. setup.sh installs it in two repos, and it runs in whichever one is committing:
-  vault      refuse likely secrets or card numbers, changes to existing raw/ sources (raw/ is create-only), and
-             any commit whose author or committer isn't the vault's identity (.memex/vault.json)
+"""Git hooks for Memex. setup.sh installs the pre-commit check in two repos; it runs in whichever is committing:
+  vault      refuse likely secrets or card numbers, leftover conflict markers, changes to existing raw/ sources
+             (raw/ is create-only), and any commit whose author or committer isn't the vault's identity
   framework  refuse knowledge folders, vault config, embedded repositories (a vault added by mistake) and
              likely secrets outside tools/ (whose tests and patterns contain fake ones)
+With --pre-push (the vault's pre-push hook): refuse every push unless the owner attached a private remote
+(.memex/remote.json), and then allow only `memex push` (MEMEX_PUSH=1) to that URL, with no likely secrets in
+the outgoing changes.
 Bypass only if you are sure (e.g. redacting a raw file yourself): git commit --no-verify
 """
 import json
+import os
 import re
 import subprocess
 import sys
@@ -17,6 +21,7 @@ from memexlib import DEFAULT_IDENTITY, FRAMEWORK, KNOWLEDGE_DIRS  # noqa: E402
 from secretscan import hits  # noqa: E402
 
 VERB = {"M": "modified", "D": "deleted", "R": "renamed"}
+CONFLICT = re.compile(r"(?m)^(<{7} |>{7} )")
 SCANNED = (".md", ".txt", ".canvas", ".base", ".json")
 
 
@@ -24,8 +29,8 @@ def git(*args):
     return subprocess.run(["git", *args], capture_output=True, text=True).stdout
 
 
-def block(title, items, advice):
-    print(f"Memex pre-commit: commit blocked — {title}:\n  " + "\n  ".join(items), file=sys.stderr)
+def block(title, items, advice, what="pre-commit: commit"):
+    print(f"Memex {what} blocked — {title}:\n  " + "\n  ".join(items), file=sys.stderr)
     print(advice, file=sys.stderr)
     sys.exit(1)
 
@@ -79,12 +84,53 @@ def vault(top: Path):
     if raw_hits:
         block("raw/ sources are immutable", raw_hits,
               "Restore them (git restore --staged --worktree <file>) and annotate the wiki source page instead.")
-    found = secrets(git("diff", "--cached", "--name-only", "--diff-filter=ACM").splitlines())
+    staged = git("diff", "--cached", "--name-only", "--diff-filter=ACM").splitlines()
+    markers = [f for f in staged if f.endswith(SCANNED) and CONFLICT.search(git("show", f":{f}"))]
+    if markers:
+        block("unresolved merge conflicts", markers,
+              "Edit each file: keep both sides' facts, remove the <<<<<<< / ======= / >>>>>>> lines, then commit again.")
+    found = secrets(staged)
     if found:
         block("possible secrets", found,
               "Remove them (store a pointer such as '1Password: <item>'), or use --no-verify if this is a false positive.")
 
 
+ZERO = "0" * 40
+
+
+def pre_push(top: Path, url: str):
+    import remote
+    cfg = remote.settings(top)
+    if not cfg:
+        block("this vault is local-only, so pushing is disabled", [url or "(no URL)"],
+              "Its history stays on this machine. The owner can attach a private remote with `memex remote set <url>`.",
+              "pre-push: push")
+    if not remote.same_repo(url, cfg["url"]):
+        block(f"the vault pushes only to the private remote the owner attached ({cfg['url']})", [url],
+              "Nothing was pushed.", "pre-push: push")
+    if os.environ.get("MEMEX_PUSH") != "1":
+        block("push the vault with `memex push` (or let `memex commit` do it)", [url],
+              "It checks the remote is still private and syncs first.", "pre-push: push")
+    added = []
+    for line in sys.stdin.read().splitlines():
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        local_sha = parts[1]
+        if local_sha == ZERO:
+            block("deleting branches on the remote isn't allowed", [parts[2]], "Nothing was pushed.", "pre-push: push")
+        log = git("log", "-p", "--no-color", "--format=", local_sha, "--not", "--remotes=origin")
+        added += [l[1:] for l in log.splitlines() if l.startswith("+") and not l.startswith("+++")]
+    found = hits("\n".join(added))
+    if found:
+        block("possible secrets in the commits being pushed", [f"possible {f}" for f in found],
+              "Remove them in a new commit (store a pointer such as '1Password: <item>'), then memex push. Nothing was "
+              "pushed.", "pre-push: push")
+
+
 if __name__ == "__main__":
     top = Path(git("rev-parse", "--show-toplevel").strip() or ".").resolve()
-    framework() if top == FRAMEWORK else vault(top)
+    if sys.argv[1:2] == ["--pre-push"]:
+        pre_push(top, sys.argv[3] if len(sys.argv) > 3 else "")
+    else:
+        framework() if top == FRAMEWORK else vault(top)

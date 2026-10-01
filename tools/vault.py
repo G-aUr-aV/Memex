@@ -2,18 +2,23 @@
 """Create, render and check a Memex vault (stdlib only). setup.sh and the memex CLI call into this.
 
   python3 tools/vault.py setup [--vault PATH] [--default PATH] [--agents …]   what setup.sh runs
-  memex init <path>          create a vault from seed/: its own local-only git repo with the pseudo identity
+  memex init <path>          create a vault from seed/: its own local-first git repo with the pseudo identity
   memex sync [--check]       re-render the managed files from the framework
   memex doctor [--fix]       check the vault's git safety settings and managed files
+  memex move <path>          move the vault and re-point everything at it (owner only)
+  memex uninstall            remove Memex from this machine (owner only; see uninstall())
 
 A vault holds three kinds of files:
   vault-owned  inbox/ raw/ wiki/ journal/ notes/ outputs/ Home.md meta/bases/ meta/lint/ .obsidian/   committed
   vault config .memex/vault.json (name, domains, identity) · .memex/local.md (vault-only rules)
                · .memex/domains.json + .memex/domains/<name>.md (vault-only domains)                     committed
+  machine      .memex/remote.json (the private remote, if attached) · state.json · sessions.jsonl ·
+               backup.json · backup/                                                        git-excluded
   managed      rendered from the framework on every sync (see outputs()): excluded from the vault's git
                through .git/info/exclude and protected by the guard. Change them in the framework.
 """
 import argparse
+import contextlib
 import datetime
 import fcntl
 import hashlib
@@ -46,8 +51,18 @@ fi
 exec python3 "$FW/tools/precommit.py"
 """
 PRE_PUSH = """#!/bin/sh
-# Managed by Memex (tools/vault.py).
-echo "Memex: this vault is local-only, so pushing is disabled. Its history stays on this machine." >&2
+# Managed by Memex (tools/vault.py): refuses every push unless the owner attached a private remote, and then
+# allows only `memex push` to that one URL, after a secret scan of what's going out.
+FW={fw}
+if [ ! -f "$FW/tools/precommit.py" ]; then
+  echo "Memex: the framework isn't at $FW any more, so this push can't be checked and is blocked." >&2
+  exit 1
+fi
+exec python3 "$FW/tools/precommit.py" --pre-push "$@"
+"""
+STANDALONE_PRE_PUSH = """#!/bin/sh
+# Left by `memex uninstall`: this vault was local-only. Delete this file if you ever want to push it.
+echo "This vault is local-only, so pushing is disabled (.git/hooks/pre-push)." >&2
 exit 1
 """
 FRAMEWORK_PRE_COMMIT = """#!/bin/sh
@@ -213,7 +228,8 @@ def write_exclude(v: Path, outs: dict):
         entry = f"/{d}/" if d else f"/{rel}"
         if entry not in lines:
             lines.append(entry)
-    lines += ["/.memex/state.json", "/.memex/backup/"]
+    lines += ["/.memex/state.json", "/.memex/backup/", "/.memex/sessions.jsonl", "/.memex/backup.json",
+              "/.memex/remote.json"]
     ex = git_dir / "info" / "exclude"
     text = ex.read_text(encoding="utf-8") if ex.exists() else ""
     text = re.sub(re.escape(EXCLUDE_BEGIN) + r".*?" + re.escape(EXCLUDE_END) + r"\n?", "", text, flags=re.S).rstrip("\n")
@@ -317,7 +333,8 @@ def describe(res: dict) -> str:
 # ---------- git ----------
 
 def harden_git(v: Path):
-    """Make v its own local-only repo that always commits as the vault's identity. Safe to re-run."""
+    """Make v its own repo that always commits as the vault's identity and pushes only through Memex.
+    Safe to re-run."""
     if not (v / ".git").exists():
         if ml.git(v, "init", "-q", "-b", "main").returncode:
             ml.git(v, "init", "-q")
@@ -332,7 +349,8 @@ def harden_git(v: Path):
             raise VaultError(f"git config {key} failed in {v}: {r.stderr.strip()}")
     hooks = v / ".git" / "hooks"
     hooks.mkdir(parents=True, exist_ok=True)
-    for name, text in (("pre-commit", PRE_COMMIT.format(fw=shlex.quote(str(FW)))), ("pre-push", PRE_PUSH)):
+    for name, text in (("pre-commit", PRE_COMMIT.format(fw=shlex.quote(str(FW)))),
+                       ("pre-push", PRE_PUSH.format(fw=shlex.quote(str(FW))))):
         (hooks / name).write_text(text, encoding="utf-8")
         (hooks / name).chmod(0o755)
 
@@ -343,20 +361,29 @@ def identity_env(v: Path) -> dict:
                        "GIT_COMMITTER_NAME": ident["name"], "GIT_COMMITTER_EMAIL": ident["email"]})
 
 
-def commit(v: Path, message: str, force=False, check_lint=True) -> str:
-    """Rebuild the index, lint, and commit everything in the vault as the vault's identity. Never pushes."""
-    v = Path(v).resolve()
-    lock_path = Path(tempfile.gettempdir()) / f"memex-{hashlib.sha1(str(v).encode()).hexdigest()[:10]}.lock"
+@contextlib.contextmanager
+def locked(v: Path):
+    """One writer at a time (commit, pull, move), even with several agents running."""
+    lock_path = Path(tempfile.gettempdir()) / f"memex-{hashlib.sha1(str(Path(v).resolve()).encode()).hexdigest()[:10]}.lock"
     with open(lock_path, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)  # one commit at a time, even with several agents running
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def commit(v: Path, message: str, force=False, check_lint=True, sync_remote=True) -> str:
+    """Rebuild the index, lint, and commit everything in the vault as the vault's identity. Then, if the owner
+    attached a private remote, push (a failed push never fails the commit)."""
+    import remote
+    v = Path(v).resolve()
+    with locked(v):
         top = ml.repo_top(v)
         if top != v:
             raise VaultError(f"{v} has no git repository of its own" + (f" (git would use {top})" if top else "") +
                              ". Refusing to commit so nothing lands in another repo. Run memex doctor --fix.")
-        remotes = ml.git(v, "remote").stdout.split()
-        if remotes:
-            raise VaultError(f"the vault has git remote(s) {', '.join(remotes)}. Memex vaults are local-only; remove "
-                             "them (git remote remove <name>) before committing.")
+        remote.check_remotes(v)
+        if remote.in_progress(v) == "rebase":
+            raise VaultError("a rebase is in progress in the vault; run git rebase --abort, then memex pull")
+        merging = remote.in_progress(v) == "merge"
         tool(v, "build_index.py")
         if check_lint:
             lint = tool(v, "lint.py", "--quick")
@@ -365,30 +392,124 @@ def commit(v: Path, message: str, force=False, check_lint=True) -> str:
                 raise VaultError("commit skipped: fix the lint errors above, then run memex commit again "
                                  "(--force only for errors you didn't cause)")
         ml.git(v, "add", "-A", ".")
-        if ml.git(v, "diff", "--cached", "--quiet").returncode == 0:
-            return "nothing to commit"
-        msg = f"{message.strip()}\n\nMemex-Framework: {VERSION} ({ml.framework_sha()})\n"
-        c = ml.git(v, "commit", "-q", "-F", "-", env=identity_env(v), input=msg)
-        if c.returncode:
-            raise VaultError(f"git commit failed:\n{(c.stdout + c.stderr).strip()}\nNothing was pushed.")
-        stat = ml.git(v, "show", "--stat", "--format=%h %s", "HEAD").stdout.strip().splitlines()
-        return f"committed {stat[0]}" + (f" ({stat[-1].strip()})" if len(stat) > 1 else "")
+        if ml.git(v, "diff", "--cached", "--quiet").returncode == 0 and not merging:
+            result = "nothing to commit"
+        else:
+            msg = f"{message.strip()}\n\nMemex-Framework: {VERSION} ({ml.framework_sha()})\n"
+            c = ml.git(v, "commit", "-q", "-F", "-", env=identity_env(v), input=msg)
+            if c.returncode:
+                raise VaultError(f"git commit failed:\n{(c.stdout + c.stderr).strip()}\nNothing was pushed.")
+            stat = ml.git(v, "show", "--stat", "--format=%h %s", "HEAD").stdout.strip().splitlines()
+            result = f"committed {stat[0]}" + (f" ({stat[-1].strip()})" if len(stat) > 1 else "")
+            if merging:
+                remote.save(v, conflict=[], last_error="")
+    cfg = remote.settings(v)
+    if sync_remote and cfg and cfg["auto"]:
+        try:
+            pushed = remote.push(v)
+        except VaultError as e:
+            pushed = f"push refused: {e}"
+        if pushed:
+            result += f"; {pushed}"
+    return result
+
+
+def after_pull(v: Path):
+    """New commits arrived: refresh what's derived from them (indexes; managed files if vault config changed)."""
+    sync(v, only_if_stale=True)
+    tool(v, "build_index.py")
+
+
+# ---------- backup ----------
+
+def backup_age(v: Path):
+    """Days since the last `memex backup`, or None if there never was one."""
+    try:
+        last = json.loads((v / ".memex" / "backup.json").read_text(encoding="utf-8"))["last"]
+        return (datetime.datetime.now() - datetime.datetime.fromisoformat(last)).days
+    except Exception:
+        return None
+
+
+def push_age(v: Path):
+    """Days since the last successful push to the private remote, or None (no remote, or never pushed)."""
+    import remote
+    try:
+        last = remote.load(v)["last_push"] if remote.settings(v) else None
+        return (datetime.datetime.now() - datetime.datetime.fromisoformat(last)).days if last else None
+    except Exception:
+        return None
+
+
+def bundle(v: Path, to=None, keep=None):
+    """Write a verified git bundle of the whole vault history; keep the newest `keep` bundles.
+    Returns (bundle path, bundles pruned, uncommitted changes?, same disk as the vault?)."""
+    v = Path(v).resolve()
+    b = ml.feature("backup", v)
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", str(ml.settings(v).get("name") or v.name)).strip("-") or "vault"
+    dest = Path(to or b.get("dir") or (Path.home() / "Memex Backups" / name)).expanduser().resolve()
+    if ml.inside(dest, v):
+        raise VaultError(f"{dest} is inside the vault; back it up somewhere else")
+    if ml.git(v, "rev-parse", "--verify", "HEAD").returncode:
+        raise VaultError("the vault has no commits yet")
+    dest.mkdir(parents=True, exist_ok=True)
+    stamp, n = f"{datetime.datetime.now():%Y%m%d-%H%M%S}", 1
+    path = dest / f"{name}-{stamp}.bundle"
+    while path.exists():
+        n += 1
+        path = dest / f"{name}-{stamp}-{n}.bundle"
+    r = ml.git(v, "bundle", "create", str(path), "--all")
+    if r.returncode or ml.git(v, "bundle", "verify", str(path)).returncode:
+        path.unlink(missing_ok=True)
+        raise VaultError(f"git bundle failed: {(r.stderr or r.stdout).strip()}")
+    old = sorted(dest.glob(f"{name}-*.bundle"), key=lambda f: (f.stat().st_mtime_ns, f.name))  # oldest first
+    extra = old[:-int(keep or b.get("keep") or 10)]
+    for f in extra:
+        f.unlink()
+    (v / ".memex" / "backup.json").write_text(json.dumps({"last": datetime.datetime.now().isoformat(timespec="seconds"),
+                                                          "path": str(path)}, indent=2) + "\n", encoding="utf-8")
+    dirty = bool(ml.git(v, "status", "--porcelain").stdout.strip())
+    return path, len(extra), dirty, os.stat(dest).st_dev == os.stat(v).st_dev
 
 
 # ---------- init ----------
 
+FW_EXCLUDE_NOTE = "# Memex vault (never part of the framework)"
+
+
+def framework_exclude() -> Path:
+    ex = Path(ml.git(FW, "rev-parse", "--git-path", "info/exclude").stdout.strip() or ".git/info/exclude")
+    return ex if ex.is_absolute() else FW / ex
+
+
 def ensure_framework_ignores(p: Path):
     if ml.framework_ignores(p):
         return
-    ex = Path(ml.git(FW, "rev-parse", "--git-path", "info/exclude").stdout.strip() or ".git/info/exclude")
-    ex = ex if ex.is_absolute() else FW / ex
+    ex = framework_exclude()
     ex.parent.mkdir(parents=True, exist_ok=True)
     text = ex.read_text(encoding="utf-8") if ex.exists() else ""
     ex.write_text(text.rstrip("\n") + ("\n" if text else "") +
-                  f"# Memex vault (local-only; never part of the framework)\n/{p.relative_to(FW).as_posix()}/\n",
-                  encoding="utf-8")
+                  f"{FW_EXCLUDE_NOTE}\n/{p.relative_to(FW).as_posix()}/\n", encoding="utf-8")
     if not ml.framework_ignores(p):
         raise VaultError(f"couldn't make the framework repo ignore {p}")
+
+
+def drop_framework_exclude(p: Path = None):
+    """Remove the framework exclude entry setup added for vault p (or every such entry when p is None)."""
+    ex = framework_exclude()
+    if not (FW / ".git").exists() or not ex.exists():
+        return
+    want = f"/{p.relative_to(FW).as_posix()}/" if p is not None and ml.inside(p, FW) else None
+    if p is not None and want is None:
+        return
+    lines, out, i = ex.read_text(encoding="utf-8").splitlines(), [], 0
+    while i < len(lines):
+        if lines[i] == FW_EXCLUDE_NOTE and i + 1 < len(lines) and (want is None or lines[i + 1] == want):
+            i += 2
+            continue
+        out.append(lines[i])
+        i += 1
+    ex.write_text("\n".join(out) + ("\n" if out else ""), encoding="utf-8")
 
 
 def check_location(p: Path):
@@ -427,7 +548,7 @@ def init(path, name=None) -> Path:
     p.mkdir(parents=True, exist_ok=True)
     (p / ".memex").mkdir()
     settings = {"name": name or p.name, "domains": "default", "identity": dict(ml.DEFAULT_IDENTITY),
-                "created": datetime.date.today().isoformat()}
+                "created": datetime.date.today().isoformat(), **{k: dict(val) for k, val in ml.FEATURE_DEFAULTS.items()}}
     (p / MARKER).write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     shutil.copy(seed / "memex" / "local.md", p / ".memex" / "local.md")
     shutil.copytree(seed / "obsidian", p / ".obsidian", ignore=shutil.ignore_patterns("memex.css", ".DS_Store"))
@@ -470,10 +591,30 @@ def doctor(v: Path, fix=False):
     hook = v / ".git" / "hooks" / "pre-commit"
     ok = hook.exists() and str(FW) in hook.read_text(errors="ignore") and (FW / "tools" / "precommit.py").exists()
     out.append((ok, "pre-commit hook points at this framework"))
+    import remote
     push = v / ".git" / "hooks" / "pre-push"
-    out.append((push.exists() and "local-only" in push.read_text(errors="ignore"), "pre-push hook refuses every push"))
-    remotes = ml.git(v, "remote").stdout.split()
-    out.append((not remotes, "no git remotes" if not remotes else f"git remote(s) configured: {', '.join(remotes)}"))
+    rcfg = remote.settings(v)
+    ok = push.exists() and "--pre-push" in push.read_text(errors="ignore") and str(FW) in push.read_text(errors="ignore")
+    out.append((ok, "pre-push hook allows only `memex push` to the attached remote" if rcfg else
+                "pre-push hook refuses every push"))
+    try:
+        remote.check_remotes(v, rcfg)
+        if rcfg:
+            st = remote.load(v)
+            out.append((st.get("visibility") != "public", f"remote origin → {rcfg['url']} "
+                        f"({st.get('visibility', 'visibility not checked')}, checked {st.get('visibility_checked', 'never')})"))
+        else:
+            out.append((True, "no git remote (local-only)"))
+    except VaultError as e:
+        out.append((False, str(e)))
+    if rcfg:
+        st = remote.load(v)
+        state = remote.in_progress(v)
+        problem = (f"a {state} is in progress" if state else
+                   f"sync conflict in {', '.join(st['conflict'][:3])} (memex pull --merge)" if st.get("conflict") else
+                   f"last sync error: {st['last_error']}" if st.get("last_error") else "")
+        out.append((None if problem else True, problem or f"synced: last pull {st.get('last_pull', 'never')}, "
+                    f"last push {st.get('last_push', 'never')}"))
     log = ml.git(v, "log", "--all", "--format=%an <%ae>%n%cn <%ce>")
     others = sorted({l for l in log.stdout.splitlines() if l.strip()} - {want}) if log.returncode == 0 else []
     out.append((not others, "every commit uses the vault identity" if not others else
@@ -482,6 +623,14 @@ def doctor(v: Path, fix=False):
         out.append((ml.framework_ignores(v), "the framework repo ignores this vault"))
     fresh = not stale(v)
     out.append((fresh, "managed files are up to date" if fresh else "managed files are stale: run memex sync"))
+    age, warn = backup_age(v), int(ml.feature("backup", v)["warn_days"])
+    pushed = push_age(v)
+    if pushed is not None and pushed <= warn and (age is None or age > warn):
+        out.append((True, f"off-machine copy: pushed to the private remote {pushed} day(s) ago"))
+    else:
+        out.append((True if age is not None and age <= warn else None,
+                    "no backup yet (memex backup)" if age is None else f"last backup {age} day(s) ago" +
+                    (" (memex backup)" if age > warn else "")))
     tracked = ml.git(FW, "ls-files", "--", *ml.KNOWLEDGE_DIRS).stdout.split()
     out.append((not tracked, "the framework repo tracks no knowledge" if not tracked else
                 f"the framework repo tracks knowledge files: {', '.join(tracked[:3])}"))
@@ -553,8 +702,15 @@ def setup(a):
     else:
         init(v)
         say(f"vault created: {v}")
-        say("  its own git repo: no remote, pushes refused, every commit as "
-            f"{ml.identity(v)['name']} <{ml.identity(v)['email']}>")
+        say(f"  its own git repo: every commit as {ml.identity(v)['name']} <{ml.identity(v)['email']}>, "
+            "no remote, pushes refused")
+    if a.remote:
+        import remote
+        cur = remote.settings(v)
+        if cur and remote.same_repo(cur["url"], a.remote):
+            say(f"remote: {cur['url']} (already attached)")
+        else:
+            say("remote: " + remote.attach(v, a.remote, branch=a.branch, yes=True, unverified=a.unverified))
     cfg = ml.load_config()
     cfg.update({"vault": str(v), "framework": str(FW)})
     ml.save_config(cfg)
@@ -574,10 +730,217 @@ def setup(a):
     bin_dir = str(Path.home() / ".local" / "bin")
     if a.agents != "none" and bin_dir not in os.environ.get("PATH", "").split(os.pathsep):
         say(f"WARNING: {bin_dir} is not on PATH, and skills call `memex`. Add: export PATH=\"$HOME/.local/bin:$PATH\"")
-    say("Backups: the vault has no remote, so this disk holds the only copy. Keep Time Machine on, or run "
-        "`git -C <vault> bundle create <drive>/vault.bundle --all` now and then.")
+    import remote
+    if not remote.settings(v):
+        say("Backups: with no remote, this disk holds the only copy. Run `memex backup --to <external drive>`, or "
+            "attach a private remote: `memex remote set <url>`.")
     if ml.inside(v, FW):
-        say(f"The vault lives inside the framework folder: never delete or re-clone {FW} without moving the vault out first.")
+        say(f"The vault lives inside the framework folder: never delete or re-clone {FW} without moving the vault "
+            "out first (`memex move <path>`).")
+
+
+# ---------- move & uninstall (owner only; the guard blocks agents) ----------
+
+INTEGRATION = Path.home() / ".config" / "memex" / "integration.json"
+PROFILES = (".zshrc", ".zprofile", ".bash_profile", ".bashrc", ".profile")
+
+
+def integration_state() -> dict:
+    try:
+        return json.loads(INTEGRATION.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+def wired_agents() -> str:
+    return ",".join(a for a in ("claude", "codex", "hermes") if a in integration_state()) or "none"
+
+
+def move(v: Path, dest) -> list:
+    """Move the vault to dest and re-point the config, managed files and agent wiring at it. Returns notes."""
+    import remote
+    from_env = os.environ.get("MEMEX_VAULT")
+    v, dest = Path(v).resolve(), Path(dest).expanduser().resolve()
+    if dest == v:
+        raise VaultError(f"the vault is already at {v}")
+    if ml.inside(dest, v):
+        raise VaultError(f"{dest} is inside the vault")
+    if dest.exists() and (not dest.is_dir() or any(x for x in dest.iterdir() if x.name != ".DS_Store")):
+        raise VaultError(f"{dest} already exists and isn't empty. Give a new (or empty) folder.")
+    if remote.in_progress(v):
+        raise VaultError("finish the merge or rebase in progress first")
+    check_location(dest)
+    head = ml.git(v, "rev-parse", "HEAD").stdout.strip()
+    with locked(v):
+        if dest.exists():
+            shutil.rmtree(dest)  # empty apart from .DS_Store (checked above)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(v), str(dest))
+    if not (dest / MARKER).is_file() or ml.git(dest, "rev-parse", "HEAD").stdout.strip() != head:
+        raise VaultError(f"the move didn't verify: check {dest} (and {v}) by hand before using Memex")
+    cfg = ml.load_config()
+    cfg["vault"] = str(dest)
+    ml.save_config(cfg)
+    drop_framework_exclude(v)
+    os.environ["MEMEX_VAULT"] = str(dest)
+    ml._vault = None
+    harden_git(dest)
+    sync(dest)
+    agents = wired_agents()
+    print(f"Agent wiring ({agents}):", flush=True)
+    subprocess.run([sys.executable, str(FW / "tools" / "integrate.py"), "--agents", agents], check=False)
+    notes = [f"moved {v} → {dest} (history verified, {count_commits(dest)} commits)",
+             f"Obsidian: open {dest} as a vault, and remove the old entry from its vault list",
+             "Claude Code and Codex ask once to trust the new folder the first time you open an agent there"]
+    if from_env:
+        notes.append("$MEMEX_VAULT is set in your environment: update it to the new path (or unset it)")
+    return notes
+
+
+def count_commits(v: Path) -> int:
+    r = ml.git(v, "rev-list", "--count", "HEAD")
+    return int(r.stdout.strip() or 0) if r.returncode == 0 else 0
+
+
+def detach_vault(v: Path):
+    """Leave the vault as plain Markdown + git: no managed files, hooks or machine state from Memex."""
+    import remote
+    attached = remote.settings(v) is not None
+    for r_ in sorted(load_state(v).get("files", {}), reverse=True):
+        p = v / r_
+        if p.is_symlink() or p.is_file():
+            p.unlink()
+            prune_empty(v, p.parent)
+    for name in ("state.json", "sessions.jsonl", "backup.json", "remote.json"):
+        (v / ".memex" / name).unlink(missing_ok=True)
+    ex = v / ".git" / "info" / "exclude"
+    if ex.exists():
+        text = re.sub(re.escape(EXCLUDE_BEGIN) + r".*?" + re.escape(EXCLUDE_END) + r"\n?", "",
+                      ex.read_text(encoding="utf-8"), flags=re.S)
+        ex.write_text(text.rstrip("\n") + "\n" if text.strip() else "", encoding="utf-8")
+    hooks = v / ".git" / "hooks"
+    if (hooks / "pre-commit").exists() and "Managed by Memex" in (hooks / "pre-commit").read_text(errors="ignore"):
+        (hooks / "pre-commit").unlink()
+    if attached:
+        (hooks / "pre-push").unlink(missing_ok=True)
+    else:
+        (hooks / "pre-push").write_text(STANDALONE_PRE_PUSH, encoding="utf-8")
+        (hooks / "pre-push").chmod(0o755)
+
+
+def drop_path_lines() -> list:
+    """Remove the `# Memex` PATH line from shell profiles, but only if ~/.local/bin no longer holds anything."""
+    bin_dir = Path.home() / ".local" / "bin"
+    profiles = [Path.home() / n for n in PROFILES if (Path.home() / n).is_file()]
+    marked = [p for p in profiles if any(l.rstrip().endswith("# Memex") and ".local/bin" in l
+                                         for l in p.read_text(errors="ignore").splitlines())]
+    if not marked:
+        return []
+    if bin_dir.exists() and any(bin_dir.iterdir()):
+        return [f"kept the `# Memex` PATH line in {', '.join(str(p) for p in marked)}: {bin_dir} holds other programs"]
+    for p in marked:
+        lines = p.read_text(errors="ignore").splitlines(keepends=True)
+        p.write_text("".join(l for l in lines if not (l.rstrip().endswith("# Memex") and ".local/bin" in l)))
+    return [f"removed the `# Memex` PATH line from {', '.join(str(p) for p in marked)}"]
+
+
+def uninstall(delete_vault=False, confirm=None):
+    """Remove Memex from this machine: agent wiring, CLI, config and framework hooks; then delete the vault
+    (after a verified backup bundle) or leave it as plain Markdown + git. Works even if the vault is gone.
+    Returns (report lines, leftovers)."""
+    import remote
+    cfg, state = ml.load_config(), integration_state()
+    path = os.environ.get("MEMEX_VAULT") or cfg.get("vault") or state.get("vault")
+    v = Path(path).expanduser().resolve() if path else None
+    exists = bool(v and (v / MARKER).is_file())
+    report = []
+    if delete_vault and exists:
+        name = str(ml.settings(v).get("name") or v.name)
+        if confirm is None and sys.stdin.isatty():
+            confirm = input(f"  This deletes {v} and everything in it (a backup bundle is written first).\n"
+                            f"  Type the vault's name ({name}) to confirm: ").strip()
+        if confirm != name:
+            raise VaultError(f"nothing was changed. To delete the vault, confirm with its name: --confirm \"{name}\"")
+    if exists:
+        if remote.in_progress(v):
+            raise VaultError("a merge or rebase is in progress in the vault; finish it first (nothing was changed)")
+        if ml.git(v, "status", "--porcelain").stdout.strip():
+            report.append("final snapshot: " + commit(v, "uninstall: final snapshot", check_lint=False))
+        elif remote.settings(v):
+            try:
+                report.append("remote: " + (remote.push(v) or "already pushed"))
+            except VaultError as e:
+                report.append(f"remote: {e}")
+        try:
+            b, *_ = bundle(v)
+            report.append(f"backup: {b} (restore with: git clone \"{b}\" <folder>)")
+        except VaultError as e:
+            if delete_vault:
+                raise VaultError(f"couldn't write the backup bundle ({e}), so nothing was deleted")
+            report.append(f"backup skipped: {e}")
+    env = {**os.environ}
+    if exists:
+        env["MEMEX_VAULT"] = str(v)
+    else:
+        env.pop("MEMEX_VAULT", None)
+    r = subprocess.run([sys.executable, str(FW / "tools" / "integrate.py"), "--remove"], env=env,
+                       capture_output=True, text=True)
+    report += [l.strip() for l in (r.stdout + r.stderr).splitlines() if l.strip()]
+    ml.config_path().unlink(missing_ok=True)
+    INTEGRATION.unlink(missing_ok=True)
+    with contextlib.suppress(OSError):
+        ml.config_path().parent.rmdir()
+    report.append(f"removed {ml.config_path().parent}")
+    hook = FW / ".git" / "hooks" / "pre-commit"
+    if hook.exists() and "Managed by Memex setup" in hook.read_text(errors="ignore"):
+        hook.unlink()
+        report.append("removed the framework's pre-commit hook")
+    keep_nested = exists and not delete_vault and ml.inside(v, FW)
+    if not keep_nested:  # a kept vault inside the framework stays git-ignored there
+        drop_framework_exclude()
+    report += drop_path_lines()
+    if exists and delete_vault:
+        shutil.rmtree(v)
+        report.append(f"deleted the vault {v}")
+    elif exists:
+        detach_vault(v)
+        report.append(f"kept the vault {v} as plain Markdown + git (no Memex files, hooks or settings left in it)")
+    elif v:
+        report.append(f"the vault {v} was already gone")
+    kept = ["your backups", "the remote repository (if any)", "Obsidian's vault list"]
+    if "claude" in state:
+        kept.append("Claude Code's own data for the vault in ~/.claude/projects/")
+    if "hermes" in state:
+        kept.append("Hermes' skill trust for the vault path")
+    report.append("Not touched: " + ", ".join(kept) + ".")
+    return report, leftovers(v)
+
+
+def leftovers(v: Path = None) -> list:
+    """Places on this machine where Memex wiring is still present (empty after a clean uninstall)."""
+    home, found = Path.home(), []
+
+    def has(p, needle):
+        return p.is_file() and needle in p.read_text(errors="ignore")
+
+    for p in (home / ".claude" / "CLAUDE.md", home / ".codex" / "AGENTS.md", home / ".hermes" / "config.yaml"):
+        if has(p, "memex:begin"):
+            found.append(f"{p}: Memex instructions block")
+    for p in (home / ".claude" / "settings.json", home / ".codex" / "hooks.json"):
+        if has(p, str(FW)) or (v and has(p, str(v))):
+            found.append(f"{p}: Memex hooks or permissions")
+    if v and has(home / ".codex" / "config.toml", f'"{v}"'):
+        found.append(f"{home / '.codex' / 'config.toml'}: trust or writable root for {v}")
+    for p in (home / ".codex" / "rules" / "memex.rules", home / ".claude" / "skills" / "memex",
+              home / ".agents" / "skills" / "memex", home / ".hermes" / "skills" / "memex",
+              home / ".local" / "bin" / "memex", ml.config_path(), INTEGRATION):
+        if p.exists() or p.is_symlink():
+            found.append(str(p))
+    if has(FW / ".git" / "hooks" / "pre-commit", "Managed by Memex setup"):
+        found.append(f"{FW}/.git/hooks/pre-commit (the framework's Memex hook)")
+    if v and (v / ".memex" / "state.json").exists():
+        found.append(f"{v}: managed files from the framework (AGENTS.md, .claude/, …)")
+    return found
 
 
 def main():
@@ -587,13 +950,44 @@ def main():
     s.add_argument("--vault")
     s.add_argument("--default")
     s.add_argument("--agents", default="auto")
+    s.add_argument("--remote", help="attach (or join) the vault's private git remote")
+    s.add_argument("--branch", default="main")
+    s.add_argument("--unverified", action="store_true", help="the remote's privacy can't be checked (own server)")
+    s = sub.add_parser("uninstall")
+    s.add_argument("--delete-vault", action="store_true")
+    s.add_argument("--confirm")
+    s = sub.add_parser("leftovers")
+    s.add_argument("--vault", help="the vault that was uninstalled (also checks for Memex files left in it)")
     a = ap.parse_args()
     sys.stdout.reconfigure(line_buffering=True)  # keep our lines in order with the child tools' output
     try:
-        setup(a)
+        if a.cmd == "setup":
+            setup(a)
+        elif a.cmd == "uninstall":
+            sys.exit(print_uninstall(*uninstall(a.delete_vault, a.confirm)))
+        else:
+            path = a.vault or ml.load_config().get("vault")
+            sys.exit(print_leftovers(leftovers(Path(path).expanduser().resolve() if path else None)))
     except VaultError as e:
         print(f"memex: {e}", file=sys.stderr)
         sys.exit(2)
+
+
+def print_leftovers(left) -> int:
+    if not left:
+        print("✓ no Memex wiring left on this machine")
+        return 0
+    print("Memex wiring still present:")
+    for x in left:
+        print(f"  ✗ {x}")
+    return 1
+
+
+def print_uninstall(report, left) -> int:
+    print("Memex uninstall:")
+    for line in report:
+        print(f"  {line}")
+    return print_leftovers(left)
 
 
 if __name__ == "__main__":

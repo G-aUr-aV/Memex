@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Print the live context a Memex skill needs (used by the skills' !`memex ctx …` lines).
 
-  memex ctx <ingest|inbox|lint|today|close|weekly>      (or: python3 tools/context.py …)
+  memex ctx <ingest|inbox|harvest|lint|today|close|weekly>      (or: python3 tools/context.py …)
 
 One allow-listed command instead of shell pipelines, so skills never abort on a permission
 check. Always exits 0 and never writes anything.
@@ -73,6 +73,27 @@ def section(path, heading):
     return lines
 
 
+def harvest(limit=15):
+    import sessions
+    from memexlib import feature
+    minimum = int(feature("harvest", ROOT)["min_tool_calls"])
+    pending = [r for r in sessions.load(ROOT) if not r["harvested"]]
+    rows = [(r, sessions.digest(r.get("transcript_path"))) for r in pending]
+    real = [(r, d) for r, d in rows if d["unparsed"] or (d["tool_calls"] >= minimum and not d["missing"])]
+    print(f"Sessions to harvest: {len(real)} (plus {len(rows) - len(real)} trivial or missing)" if rows
+          else "Sessions to harvest: none")
+    for r, d in real[:limit]:
+        first = (d["prompts"][0] if d["prompts"] else "").replace("\n", " ")[:80]
+        print(f"- {r['session_id'][:8]} {(d['started'] or r.get('first_ts') or '')[:10]} {r.get('agent', '')} {r.get('repo', '')} "
+              f"({d['tool_calls']} tool calls, {len(d['files'])} files): {first!r}")
+    if len(real) > limit:
+        print(f"- … {len(real) - limit} more")
+    unparsed = sum(1 for _, d in real if d["unparsed"])
+    if unparsed:
+        print(f"WARNING: {unparsed} of these are in a transcript format Memex doesn't recognize (UNPARSED); "
+              "tell the owner and leave them for a framework update.")
+
+
 def main():
     what = (sys.argv[1] if len(sys.argv) > 1 else "").lower()
     print(f"Now: {NOW:%Y-%m-%d %A %H:%M} · ISO week {TODAY.isocalendar()[0]}-W{TODAY.isocalendar()[1]:02d}")
@@ -91,7 +112,10 @@ def main():
     elif what == "close":
         caps = section(daily(TODAY), "Captures")
         print("Today's captures:", *(caps[:30] or ["none"]), sep="\n")
+        harvest(limit=5)
         inbox(ages=True)
+    elif what == "harvest":
+        harvest()
     elif what == "weekly":
         since = TODAY - datetime.timedelta(days=7)
         entries = log_entries(since=since)
@@ -100,7 +124,7 @@ def main():
         print("Daily notes this week:", ", ".join(notes) or "none")
         inbox(limit=5)
     else:
-        print("usage: memex ctx <ingest|inbox|lint|today|close|weekly>")
+        print("usage: memex ctx <ingest|inbox|harvest|lint|today|close|weekly>")
 
 
 def run():

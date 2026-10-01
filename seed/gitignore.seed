@@ -11,6 +11,11 @@
 # Memex sync state and backups (the files rendered from the framework are listed in .git/info/exclude)
 .memex/state.json
 .memex/backup/
+.memex/backup.json
+# Session ledger for /harvest (points at local agent transcripts)
+.memex/sessions.jsonl
+# The private remote this machine syncs with, and the last sync results
+.memex/remote.json
 # Large media you may not want in history (uncomment to exclude)
 # raw/assets/**/*.mp4
 # raw/assets/**/*.mov

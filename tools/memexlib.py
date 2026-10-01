@@ -3,8 +3,9 @@
 Memex has two roots, and they never overlap:
   FRAMEWORK  this checkout of the framework: tools, hooks, schema, skills, templates. It holds no knowledge
              and is the repo you push.
-  vault()    the owner's knowledge (inbox/ raw/ wiki/ journal/ notes/ outputs/): a separate, local-only git
+  vault()    the owner's knowledge (inbox/ raw/ wiki/ journal/ notes/ outputs/): a separate, local-first git
              repo, found through $MEMEX_VAULT or "vault" in ~/.config/memex/config.json (written by setup.sh).
+             It has no remote unless the owner attaches one private remote (`memex remote set`; see remote.py).
 """
 import json
 import os
@@ -71,9 +72,12 @@ def git_env(extra=None) -> dict:
     return env
 
 
-def git(cwd, *args, env=None, input=None):
-    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, env=env or git_env(),
-                          input=input)
+def git(cwd, *args, env=None, input=None, timeout=None):
+    try:
+        return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, env=env or git_env(),
+                              input=input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(["git", *args], 124, "", f"timed out after {timeout}s")
 
 
 def repo_top(path: Path):
@@ -163,6 +167,25 @@ def settings(v: Path = None) -> dict:
         return json.loads((v / MARKER).read_text(encoding="utf-8")) or {}
     except Exception as e:
         raise VaultError(f"{v / MARKER} isn't valid JSON ({e})")
+
+
+FEATURE_DEFAULTS = {
+    # session ledger + /harvest: turn agent sessions in other repos into knowledge
+    "harvest": {"enabled": True, "exclude": [], "min_tool_calls": 5},
+    # memex backup: git bundles of the vault (the only copy lives on this disk)
+    "backup": {"dir": "", "keep": 10, "warn_days": 14},
+    # repo-aware recall printed at the start of agent sessions in other repos
+    "recall": {"enabled": True, "max_pages": 3},
+}
+
+
+def feature(name: str, v: Path = None) -> dict:
+    """A feature's settings from .memex/vault.json, over the defaults above."""
+    try:
+        own = settings(v).get(name) or {}
+    except VaultError:
+        own = {}
+    return {**FEATURE_DEFAULTS[name], **(own if isinstance(own, dict) else {})}
 
 
 def identity(v: Path = None) -> dict:

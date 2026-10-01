@@ -1,6 +1,6 @@
 ---
 name: memex-setup
-description: Install Memex on this machine end to end, with no manual steps. Checks prerequisites, creates or reuses the local-only vault (default MemexVault in the current folder), hardens its git repo, wires Claude Code, Codex and Hermes, puts `memex` on PATH, verifies everything with doctor, lint and the test suite, and reports the few Obsidian steps only a person can click. Use when the owner says set up / install / configure Memex, run setup, get Memex working, or has just cloned this repo.
+description: Install Memex on this machine end to end, with no manual steps. Checks prerequisites, creates or reuses the vault (default MemexVault in the current folder), hardens its git repo, wires Claude Code, Codex and Hermes, puts `memex` on PATH, verifies everything with doctor, lint and the test suite, and reports the few Obsidian steps only a person can click. Use when the owner says set up / install / configure Memex, run setup, get Memex working, or has just cloned this repo.
 argument-hint: "[vault path] [--agents claude,codex,hermes]"
 allowed-tools: Bash(bash setup.sh *), Bash(memex *), Bash(python3 --version), Bash(python3 tools/test_memex.py), Bash(git --version), Bash(git status *)
 ---
@@ -30,18 +30,20 @@ bash setup.sh --vault "<vault path>"                 # add --agents claude,codex
 With no terminal attached it never prompts. It:
 - creates the vault's folders and seed files;
 - renders the schema, skills, rules and agent settings into it;
-- makes the vault a local-only git repo (Memex Agent identity, pre-commit and pre-push hooks);
+- makes the vault its own git repo (Memex Agent identity, pre-commit and pre-push hooks, no remote);
 - records the vault in `~/.config/memex/config.json`;
 - installs the framework's own pre-commit hook;
 - wires every agent it finds.
 
 If it fails, read the error. It names the fix (for example, "inside another git repository" means pick another path). Apply the fix and run it again.
 
+**Syncing with a private git repo** (for example, this machine should join a vault the owner already uses elsewhere): attaching a remote is the owner's call, and the guard blocks agents from it. Ask the owner to run `bash setup.sh --vault "<vault path>" --remote <url>` in their terminal. It refuses public repositories. On a new vault it adopts the remote's history, so this machine joins that vault. Then continue with step 4.
+
 ## 4. Put `memex` on PATH
 If `command -v memex` finds nothing, add `export PATH="$HOME/.local/bin:$PATH"  # Memex` to the login shell's profile: `~/.zshrc` for zsh, `~/.bash_profile` (macOS) or `~/.bashrc` (Linux) for bash. Add it only if a `.local/bin` PATH line isn't already there, and mention the change in the report. For the rest of this run, call `"$HOME/.local/bin/memex"`.
 
 ## 5. Verify: all must pass
-1. `memex doctor`: every line ✓. On any ✗, run `memex doctor --fix` once and re-check. It covers the identity, signing, hooks, the missing remote, the commit history, managed files, and the framework tracking no knowledge.
+1. `memex doctor`: every line ✓. On any ✗, run `memex doctor --fix` once and re-check. It covers the identity, signing, hooks, the remote (none, or only the private one the owner attached), the commit history, managed files, and the framework tracking no knowledge.
 2. `memex context`: the first lines name the vault.
 3. `memex lint --quick`: 0 errors.
 4. `python3 tools/test_memex.py`: `OK` (about 15 s; it runs in a temporary folder with a fake HOME and never touches the real vault). Skip it only if the owner asked for speed.
@@ -49,8 +51,8 @@ If `command -v memex` finds nothing, add `export PATH="$HOME/.local/bin:$PATH"  
 
 ## 6. Report (≤ 12 lines)
 - the vault path, and whether it was created or reused;
-- the commit identity, and that the vault has no remote and refuses pushes;
-- the agents wired, and any PATH change;
+- the commit identity, and whether the vault syncs with a private remote or is local-only (pushes refused);
+- the agents wired (including the global session hooks: repo recall at start, the /harvest ledger at the end), and any PATH change;
 - the verification results.
 
 Then list only what a person has to do, in this order. Skip any that are already done (setup prints ✓ for them):
@@ -59,10 +61,12 @@ Then list only what a person has to do, in this order. Skip any that are already
 3. Optional: the Web Clipper extension → import `clipper/Memex Inbox.json` and set its vault.
 4. Hermes only: start it once as `hermes --accept-hooks`.
 
+With no remote, suggest `memex backup --to <external drive>` (or setting `backup.dir` in `.memex/vault.json`), or a private remote the owner attaches with `memex remote set <url>`.
+
 End with how to start: `cd "<vault>" && claude` (or `codex`, or `hermes`), then clip Karpathy's LLM Wiki gist and run `/ingest` on it.
 
 ## Never
-- push, or add a git remote to the vault;
+- attach, change or remove the vault's remote, or push it yourself (the owner runs `memex remote set`; `memex commit` syncs);
 - create, edit or commit knowledge in the framework repo;
 - edit agent configs by hand; `setup.sh` merges them and `bash setup.sh --remove-agents` undoes them;
-- move, rename or delete an existing vault. If the owner wants a different location, tell them to move the folder themselves and re-run `bash setup.sh --vault <new path>`.
+- move, rename or delete an existing vault. For a new location the owner runs `memex move <new path>`; to remove Memex, follow `.claude/skills/memex-uninstall/SKILL.md`.

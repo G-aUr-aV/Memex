@@ -14,7 +14,7 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 - Skills call `memex ctx`, `memex lint` and `memex commit` instead of tool paths.
 
 ### Added
-- **Local-only vault git**: repo-local `Memex Agent <memex-agent@localhost>` identity (also `author.*`/`committer.*`), no commit signing, local `core.hooksPath`, a pre-commit hook that also refuses other identities, and a pre-push hook that refuses everything. `memex commit` forces the identity through the environment (beating global and `includeIf` config), refuses to run with a remote or without its own repo, and adds a `Memex-Framework: <version> (<sha>)` trailer.
+- **Vault git (local-only by default)**: repo-local `Memex Agent <memex-agent@localhost>` identity (also `author.*`/`committer.*`), no commit signing, local `core.hooksPath`, a pre-commit hook that also refuses other identities, and a pre-push hook that refuses everything. `memex commit` forces the identity through the environment (beating global and `includeIf` config), refuses to run with a remote or without its own repo, and adds a `Memex-Framework: <version> (<sha>)` trailer.
 - The framework's own pre-commit hook and a CI check refuse knowledge folders, vault config and embedded repos.
 - `memex init`, `memex sync [--check]`, `memex doctor [--fix]`, `memex ctx`, `memex index`, `memex lint`.
 - **`memex-setup` skill** (`.claude/skills/memex-setup`, also `.agents/skills` for Codex): an agent opened in a fresh clone installs Memex end to end. It checks prerequisites, picks the vault folder, runs setup without prompts, puts `memex` on PATH, verifies with doctor, lint and tests, and reports the Obsidian clicks left.
@@ -23,6 +23,34 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 - Tests check that skills and docs only use real `memex` subcommands and `setup.sh` flags.
 - Guard: protects managed files and `.memex/vault.json`, refuses deleting or moving a folder that holds the vault, and blocks `git clean -ff/-x/-X` and `git stash --all` there.
 - MIT license.
+
+### Added: automatic memory (Phase 1)
+- **Repo-aware recall:** a global SessionStart hook (`memex hook session-start`, Claude Code and Codex; Hermes on its first turn) prints what the wiki knows about the current repo: pages whose `repo:` matches, their open loops and linked decisions. It prints nothing when nothing matches.
+- **Session ledger + `/harvest`:** a global SessionEnd hook records each session outside the vault in `.memex/sessions.jsonl`. `memex harvest` turns Claude Code and Codex transcripts (including Codex's JavaScript tool mode) into verbatim, redacted digests; the `/harvest` skill files them and compiles durable knowledge; `/close` runs it first. The `harvest` settings are `enabled`, `exclude` and `min_tool_calls`.
+- **Better retrieval:** BM25-ranked `memex search` (with `--json`), `memex read "Page#Heading"`, `memex outline` and `memex related`. Skills use these before the Obsidian CLI.
+- **`memex file`:** files an inbox item into `raw/<domain>/` without Obsidian, fixing links if it's renamed.
+- **`memex backup`:** verified git bundles, pruning, and reminders in doctor and the session context.
+- `repo:` on project pages; `recall`, `harvest` and `backup` settings written into new vaults' `vault.json`.
+
+### Added: sync, move and uninstall
+- **Optional private remote:**
+  - attaching: `memex remote set <url>` (owner only) attaches one private repository. Public repositories (checked anonymously, again daily) and URLs with credentials are refused. The URL is stored machine-locally in `.memex/remote.json`;
+  - syncing: vault sessions pull at start, `memex commit` pushes after every commit, and `memex pull [--merge]`, `memex push` and `memex remote` do it by hand;
+  - joining from another machine: `bash setup.sh --vault <folder> --remote <url>` creates a vault that adopts the remote's history;
+  - the pre-push hook allows only `memex push` to that URL, with a secret scan of the outgoing commits;
+  - conflicts: a conflicting pull is rolled back and reported, `--merge` leaves markers to resolve, and the pre-commit hook refuses leftover markers. The log, `hot.md`, daily notes and indexes union-merge.
+- **`memex move <path>`** (owner only): moves the vault and re-points the config, managed files and every agent's permissions, trust and instructions (the old Codex entries are removed).
+- **`memex uninstall [--delete-vault --confirm NAME]`** and `bash setup.sh --uninstall` (owner only):
+  - first commits, pushes and writes a verified backup bundle;
+  - removes every agent block, hook, permission and skill Memex added, plus the CLI, `~/.config/memex`, the framework's hook and exclude lines, and the `# Memex` PATH line (if `~/.local/bin` is otherwise empty);
+  - then deletes the vault, or leaves it as plain Markdown + git;
+  - finishes with a leftover scan (`python3 tools/vault.py leftovers`). It works even if the vault folder is already gone.
+- **`memex-uninstall` skill:** an agent prepares, backs up and verifies, and hands the owner the one command to run.
+- **Guard:** agents can't attach or change the remote, move the vault, uninstall, or run raw `git push`/`git remote` changes in the vault. Allow and deny tests cover each case.
+
+### Changed
+- **Reading:** read whole pages by default. Search results show each page's length, and outline → section is only for pages over 150 lines.
+- **`memex harvest`:** a transcript in a format the parser doesn't recognize is listed as UNPARSED and never skipped as trivial.
 
 ### Fixed
 - Guard: case-insensitive path matching on macOS (a differently-cased path used to pass), and non-ASCII vault paths in the fail-closed check.

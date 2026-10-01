@@ -4,6 +4,7 @@ domain: engineering
 status: active   # active|paused|done|dropped
 summary: 
 aliases: []
+repo:          # git remote (owner/name) or folder name; lets agents in that repo get this page at session start
 tags: []
 target: 
 tracker:    # link to the issue tracker / epic, if any

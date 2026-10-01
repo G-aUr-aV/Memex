@@ -43,3 +43,20 @@ def hits(text: str):
     if any(luhn(m.group(0)) for m in CARD.finditer(text)):
         found.append("payment card number")
     return found
+
+
+def redact(text: str):
+    """(text with every hard secret and card number replaced by [REDACTED: <kind>], labels found)."""
+    found = []
+    for label, rx in SECRETS:
+        text, n = rx.subn(f"[REDACTED: {label}]", text)
+        if n:
+            found.append(label)
+
+    def card(m):
+        if luhn(m.group(0)):
+            found.append("payment card number")
+            return "[REDACTED: payment card number]"
+        return m.group(0)
+
+    return CARD.sub(card, text), sorted(set(found))

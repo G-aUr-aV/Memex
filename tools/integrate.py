@@ -9,14 +9,16 @@ project without permission prompts. Run by setup.sh; safe to re-run.
 What it adds (and records in ~/.config/memex/integration.json so re-runs and --remove are clean):
   all      ~/.local/bin/memex, a shim for the framework's tools/memex.py
   claude   ~/.claude/skills/memex · a Memex block in ~/.claude/CLAUDE.md · ~/.claude/settings.json:
-           allow `memex`, reads of the vault and edits of wiki/ inbox/ outputs/, plus the guard hook
+           allow `memex`, reads of the vault and edits of wiki/ inbox/ outputs/, the guard hook, and the
+           session hooks (repo-aware recall at SessionStart, the /harvest ledger at SessionEnd)
   codex    ~/.agents/skills/memex · a Memex block in ~/.codex/AGENTS.md · ~/.codex/rules/memex.rules
-           (allow `memex`) · the guard hook in ~/.codex/hooks.json · ~/.codex/config.toml: trust the
+           (allow `memex`) · the guard and session hooks in ~/.codex/hooks.json · ~/.codex/config.toml: trust the
            vault and add it to sandbox_workspace_write.writable_roots
   hermes   ~/.hermes/skills/memex · a Memex block in ~/.hermes/config.yaml (guard on pre_tool_call,
            context on pre_llm_call) · `hermes skills trust <vault>` for the vault's own skills
 Hooks and the shim run code from the framework; permissions and trust point at the vault. One vault per
-machine: re-running setup with another vault moves the wiring there.
+machine: re-running setup with another vault (or `memex move`) moves the wiring there. --remove works even
+after the vault folder is gone (the path is recorded in integration.json).
 """
 import argparse
 import json
@@ -31,10 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import memex  # noqa: E402
 import memexlib as ml  # noqa: E402
 
-ROOT = ml.require_vault()
-V = str(ROOT)
-NAME = str(ml.settings(ROOT).get("name") or ROOT.name)
-DOMAINS = ml.domain_names(ROOT)
+ROOT = V = NAME = DOMAINS = None  # set by use_vault()
 FW = str(ml.FRAMEWORK)
 HOME = Path.home()
 STATE = HOME / ".config" / "memex" / "integration.json"
@@ -51,6 +50,17 @@ notes = []
 
 def say(msg):
     print(f"  {msg}")
+
+
+def use_vault(path=None):
+    """Point the module at the configured vault, or (for --remove) at the path recorded in the state file."""
+    global ROOT, V, NAME, DOMAINS
+    if path is None:
+        ROOT = ml.vault()
+        NAME, DOMAINS = str(ml.settings(ROOT).get("name") or ROOT.name), ml.domain_names(ROOT)
+    else:
+        ROOT, NAME, DOMAINS = Path(path), Path(path).name, []
+    V = str(ROOT)
 
 
 def load_state():
@@ -77,8 +87,10 @@ def set_block(path, begin, end, body):
     text = pat.sub("", text).rstrip("\n")
     if body is not None:
         text = (text + "\n\n" if text else "") + f"{begin}\n{body.strip()}\n{end}"
-    if text or path.exists():
-        write(path, text + "\n" if text else "")
+    if text:
+        write(path, text + "\n")
+    elif path.exists():
+        path.unlink()  # the Memex block was all it held
 
 
 def skill_text():
@@ -87,12 +99,20 @@ def skill_text():
             .replace("{{DOMAINS}}", ", ".join(DOMAINS)).replace("{{FIRST_DOMAIN}}", DOMAINS[0]))
 
 
+def prune(d: Path, stop=HOME):
+    """Remove d and its parents while they're empty (up to, not including, stop)."""
+    while d != stop and d.is_dir() and not any(d.iterdir()):
+        d.rmdir()
+        d = d.parent
+
+
 def install_skill(dest: Path, remove=False):
     f = dest / "SKILL.md"
     if remove:
         if f.exists() and "memex.py" in f.read_text():
             shutil.rmtree(dest)
             say(f"removed {dest}")
+        prune(dest.parent)
         return
     write(f, skill_text())
     say(f"skill: {dest}")
@@ -115,6 +135,30 @@ def drop_hooks(entries, cmds):
         if hooks:
             out.append({**e, "hooks": hooks})
     return out
+
+
+def session_hooks(agent):
+    """Global hooks for every session on this machine: repo-aware recall at start, the ledger at the end."""
+    return {"SessionStart": f"{ml.memex_command()} hook session-start",
+            "SessionEnd": f"{ml.memex_command()} hook session-end --agent {agent}"}
+
+
+def merge_hooks(hooks, prev_cmds, matcher, agent, remove=False):
+    """Drop every hook entry Memex added before, then add the current guard and session hooks (unless removing).
+    Returns the commands installed, for the state file."""
+    wanted = {"PreToolUse": {"matcher": matcher, "hooks": [{"type": "command", "command": GUARD, "timeout": 15}]}}
+    for event, cmd in session_hooks(agent).items():
+        wanted[event] = {"hooks": [{"type": "command", "command": cmd, "timeout": 10}]}
+    ours = set(prev_cmds) | {GUARD} | set(session_hooks(agent).values())
+    for event in wanted:
+        entries = drop_hooks(hooks.get(event), ours)
+        if not remove:
+            entries.append(wanted[event])
+        if entries:
+            hooks[event] = entries
+        else:
+            hooks.pop(event, None)
+    return [] if remove else [GUARD, *session_hooks(agent).values()]
 
 
 # ---------- shim ----------
@@ -149,26 +193,29 @@ def claude(state, remove=False):
     perms = s.setdefault("permissions", {})
     allow = [e for e in perms.get("allow", []) if e not in prev.get("allow", [])]
     s["hooks"] = s.get("hooks", {})
-    pre = drop_hooks(s["hooks"].get("PreToolUse"), set(prev.get("hooks", [])) | {GUARD})
     added = {}
     if not remove:
         mine = ["Bash(memex *)", "Bash(memex)", f"Read(/{V}/**)",
                 f"Edit(/{V}/wiki/**)", f"Edit(/{V}/inbox/**)", f"Edit(/{V}/outputs/**)"]
         new = [e for e in mine if e not in allow]
         allow += new
-        pre.append({"matcher": CLAUDE_MATCHER, "hooks": [{"type": "command", "command": GUARD, "timeout": 15}]})
-        added = {"allow": new, "hooks": [GUARD]}
+        added = {"allow": new}
+    added["hooks"] = merge_hooks(s["hooks"], prev.get("hooks", []), CLAUDE_MATCHER, "claude", remove)
     perms["allow"] = allow
-    if pre:
-        s["hooks"]["PreToolUse"] = pre
-    else:
-        s["hooks"].pop("PreToolUse", None)
     if not s["hooks"]:
         s.pop("hooks")
-    write(sp, json.dumps(s, indent=2) + "\n")
-    state["claude"] = added
-    say("Claude Code: ~/.claude/CLAUDE.md block, settings.json permissions + guard hook" if not remove
-        else "Claude Code: block, permissions and hook removed")
+    if remove:
+        if not perms["allow"]:
+            perms.pop("allow")
+        if not perms:
+            s.pop("permissions")
+    if s:
+        write(sp, json.dumps(s, indent=2) + "\n")
+    elif sp.exists():
+        sp.unlink()  # nothing but what Memex added
+    state["claude"] = added if not remove else {}
+    say("Claude Code: ~/.claude/CLAUDE.md block, settings.json permissions, guard + session hooks" if not remove
+        else "Claude Code: block, permissions and hooks removed")
 
 
 # ---------- Codex ----------
@@ -177,14 +224,37 @@ def toml_str(s):
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def codex_config(remove=False):
+def codex_drop(path: str) -> bool:
+    """Remove what codex_config() added for path: its [projects."…"] trust entry and its writable root."""
     cp = HOME / ".codex" / "config.toml"
     text = cp.read_text() if cp.exists() else ""
+    q = toml_str(path)
+    if q not in text:
+        return False
+    new = re.sub(r"(?m)^\[projects\." + re.escape(q) + r"\]\n(?:trust_level = \"trusted\"\n?)?(?=\[|\Z|\n)", "", text)
+    m = re.search(r"(?m)^writable_roots\s*=\s*\[(.*)\]\s*$", new)
+    if m and q in m.group(1):
+        items = [i.strip() for i in m.group(1).split(",") if i.strip() and i.strip() != q]
+        new = new[:m.start()] + f"writable_roots = [{', '.join(items)}]" + new[m.end():]
+    new = re.sub(r"(?m)^\[sandbox_workspace_write\]\nwritable_roots = \[\]\n?", "", new)
+    new = re.sub(r"\n{3,}", "\n\n", new).strip("\n")
+    if q in new:
+        notes.append(f"{cp}: remove {q} from it by hand (it's in a form setup didn't write).")
+    if new:
+        write(cp, new + "\n")
+    else:
+        cp.unlink()
+    return True
+
+
+def codex_config(remove=False, old=None):
+    cp = HOME / ".codex" / "config.toml"
+    if old and old != V and codex_drop(old):
+        say(f"Codex: dropped the old vault path {old} from config.toml")
     if remove:
-        if toml_str(V) in text:
-            notes.append(f"{cp}: remove {toml_str(V)} from [sandbox_workspace_write] writable_roots and its "
-                         f"[projects.{toml_str(V)}] entry if you no longer want them.")
+        codex_drop(V)
         return
+    text = cp.read_text() if cp.exists() else ""
     if re.search(r"(?m)^\s*sandbox_workspace_write\s*[.=]", text):
         notes.append(f"{cp} sets sandbox_workspace_write with dotted or inline keys; add {toml_str(V)} to its "
                      "writable_roots by hand.")
@@ -230,34 +300,35 @@ def codex_config(remove=False):
 
 def codex(state, remove=False):
     prev = state.get("codex", {})
+    old_vault = state.get("vault")
     install_skill(HOME / ".agents" / "skills" / "memex", remove)
     set_block(HOME / ".codex" / "AGENTS.md", MD_BEGIN, MD_END, None if remove else memex.pointer())
     rules = HOME / ".codex" / "rules" / "memex.rules"
     if remove:
         if rules.exists() and MARK in rules.read_text():
             rules.unlink()
+        prune(rules.parent)
     else:
+        owner_only = "".join(
+            f"prefix_rule(\n    pattern = [{', '.join(json.dumps(w) for w in ['memex', *sub])}],\n    decision = \"forbidden\",\n"
+            "    justification = \"Owner only: it sends the vault elsewhere, moves it or removes it\",\n)\n"
+            for sub in (["remote", "set"], ["remote", "remove"], ["move"], ["uninstall"]))
         write(rules, f"# {MARK}. Lets agents run the Memex CLI without prompts.\n"
                      "prefix_rule(\n    pattern = [\"memex\"],\n    decision = \"allow\",\n"
-                     "    justification = \"Memex CLI: writes only inside the vault, never pushes\",\n)\n")
+                     "    justification = \"Memex CLI: writes only inside the vault; pushes only to the owner's private remote\",\n)\n"
+                     + owner_only)
     hp = HOME / ".codex" / "hooks.json"
     h = load_json(hp)
     if h is not None:
         hooks = h.setdefault("hooks", {})
-        pre = drop_hooks(hooks.get("PreToolUse"), set(prev.get("hooks", [])) | {GUARD})
-        if not remove:
-            pre.append({"matcher": CODEX_MATCHER, "hooks": [{"type": "command", "command": GUARD, "timeout": 15}]})
-        if pre:
-            hooks["PreToolUse"] = pre
-        else:
-            hooks.pop("PreToolUse", None)
+        installed = merge_hooks(hooks, prev.get("hooks", []), CODEX_MATCHER, "codex", remove)
         if not hooks and set(h) == {"hooks"}:
             hp.unlink(missing_ok=True)
         else:
             write(hp, json.dumps(h, indent=2) + "\n")
-    codex_config(remove)
-    state["codex"] = {} if remove else {"hooks": [GUARD]}
-    say("Codex: ~/.codex/AGENTS.md block, rules, guard hook, trusted vault + writable root" if not remove
+    codex_config(remove, old_vault)
+    state["codex"] = {} if remove else {"hooks": installed if h is not None else []}
+    say("Codex: ~/.codex/AGENTS.md block, rules, guard + session hooks, trusted vault + writable root" if not remove
         else "Codex: block, rules and hook removed")
 
 
@@ -317,6 +388,15 @@ def main():
     ap.add_argument("--remove", action="store_true", help="undo what a previous run added")
     a = ap.parse_args()
     state = load_state()
+    try:
+        use_vault()
+    except ml.VaultError as e:
+        if not a.remove:
+            sys.exit(f"memex: {e}")
+        if not state.get("vault"):
+            print("  nothing to remove: no vault configured and no record of earlier wiring")
+            return
+        use_vault(state["vault"])
     if a.remove:
         agents = [x for x in ("claude", "codex", "hermes") if x in state] if a.agents == "auto" else a.agents.split(",")
     elif a.agents == "auto":

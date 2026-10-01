@@ -8,7 +8,7 @@ This vault is **{{VAULT_NAME}}** (`{{VAULT}}`). This file is rendered from the M
 
 | Path | Contents | You may |
 |---|---|---|
-| `inbox/` | capture landing zone (Web Clipper, drops, `memex capture`) | read; **before filing** redact secrets and personal data and add missing frontmatter in place (the only edits allowed); file into `raw/` with `obsidian move` |
+| `inbox/` | capture landing zone (Web Clipper, drops, `memex capture`) | read; **before filing** redact secrets and personal data and add missing frontmatter in place (the only edits allowed); file into `raw/` with `memex file` |
 | `raw/<domain>/` | immutable sources, `YYYY-MM-DD Title.md` | read; **create** new files; never edit or delete |
 | `raw/assets/` | attachments (images, PDFs) | read |
 | `wiki/` | the compiled wiki | full write, except `> [!mine]` blocks |
@@ -33,11 +33,11 @@ Every wiki page lives in exactly one domain folder; links across domains are enc
 {{DOMAINS}}
 
 Type ↔ folder: person→people, project→projects, system→systems, decision→decisions, incident→incidents, playbook→playbooks, concept→concepts, entity→entities (tools, orgs, authors, products, places), topic→topics (evolving theses, book/course hubs), source→sources, synthesis→syntheses, review→career|reflections, area→areas, goal→goals, idea→ideas.
-Templates for every type: `meta/templates/wiki/`. Read the matching template before creating a page, and set its `domain:` to the folder's domain.
+Templates for every type: `meta/templates/wiki/`. Read the matching template before creating a page, and set its `domain:` to the folder's domain. On project and system pages, set `repo:` (git remote `owner/name` or folder name): agents working in that repo then get the page at session start.
 
 ## Page conventions
 - **Filenames**: natural Title Case (`Payments Service.md`, `Idempotency Keys.md`); no `: / \ # ^ [ ] |`. Wiki filenames never start with a date; raw files and journal notes always do, which keeps basenames unique. Put the date last on point-in-time wiki pages: `Arch Sync 2026-09-25.md`.
-- **One entity = one page.** Before creating, check the section index, run `obsidian search query="<name>" path=wiki` and `obsidian aliases verbose`. On a match, update that page and add an alias. Create a page only if the subject is in ≥2 sources or central to one; otherwise mention it without a link.
+- **One entity = one page.** Before creating, check the section index and run `memex search <name>` (titles and aliases rank first; `obsidian aliases verbose` also helps when Obsidian is running). On a match, update that page and add an alias. Create a page only if the subject is in ≥2 sources or central to one; otherwise mention it without a link.
 - **Frontmatter** (required on every wiki page): `type, domain, status, summary, created, updated`. Usual: `aliases, tags, sources, confidence, reviewed`. `summary` is one line ≤160 chars and feeds the generated index, so make it specific. Leave `reviewed:` empty — only the owner fills it (with a date). `updated` = last real content change.
 - **Body**: `> [!summary]` → `> [!mine] My take` → content sections → `## Sources` → `---` → `## Timeline` (append-only `- YYYY-MM-DD | source | what changed`).
 - **Links**: `[[Page]]` on the first meaningful mention only; say why a connection matters. Never link a page that doesn't exist unless you create it in the same operation. Replace every template placeholder (`YYYY-MM-DD Source Title`, `Page`); lint fails on leftovers.
@@ -60,11 +60,12 @@ Templates for every type: `meta/templates/wiki/`. Read the matching template bef
 - **Never store** passwords, API keys, tokens, private keys, `.env` content, full card/bank/government-ID numbers, other people's PII or production data. Store a pointer instead (`1Password: <item>`).
 - **Redact before filing.** When a source contains any of the above, redact it yourself: edit the inbox copy in place (`[REDACTED: <kind>]`), or redact pasted text before saving it. File it, note the redaction in a `> [!warning]` on the source page, and list it in your report. When unsure whether something is sensitive, redact it.
 - **Connectors are read-only here**: never comment, merge, approve, push, send or create anything in GitHub, Gmail, Slack or Calendar (`gh` is used read-only).
-- **The vault's git repo is local-only.** It has no remote, its pre-push hook refuses every push, and every commit uses the vault's own identity (`.memex/vault.json`). Never add a remote, push, change the identity, or commit with plain `git commit`: use `memex commit`.
+- **The vault's git repo is the owner's.** Every commit uses the vault's own identity (`.memex/vault.json`). It has no remote unless the owner attached one private remote. If they did, the session start pulls and `memex commit` pushes, so sync needs nothing from you. Never add or change a remote, `git push`, change the identity, or commit with plain `git commit`: use `memex commit`. A `Sync: CONFLICT` line at session start means: `memex pull --merge`, edit each listed file to keep both sides' facts, then `memex commit "merge: sync"`.
 
 ## Operations (skills in `.claude/skills/`, also at `.agents/skills/` for Codex and Hermes)
 - `/ingest <file|url|pasted text>` — deep, supervised, one source at a time. Use it for anything that matters.
 - `/inbox` — quick serial processing of inbox captures, then one change summary.
+- `/harvest` — compile the owner's agent sessions in other repos (recorded automatically at session end) into knowledge; `/close` runs it first.
 - `/ask <question>` — read-only answer with citations; offers `/save`. `/save` files an answer or thread as a synthesis page.
 - `/lint` — health check. `/today`, `/close`, `/weekly` — daily-driver routines. `/prep <person|project>` — meeting prep.
 - Never ingest in parallel: the index, log and cross-links are shared state. You may *read* sources in parallel.
@@ -73,25 +74,25 @@ Templates for every type: `meta/templates/wiki/`. Read the matching template bef
 
 ## Retrieval order (every question)
 1. `wiki/hot.md` (injected at session start) → `wiki/index.md` → the section index.
-2. `obsidian search:context query="…" path=wiki limit=20`, or `memex search <terms>` if Obsidian isn't running.
-3. Read the full pages and follow `obsidian backlinks file="<Page>"`. Re-open the cited raw sections for exact details.
+2. `memex search <terms>` (BM25-ranked; `--in all` adds raw, journal and notes), or `obsidian search:context query="…" path=wiki limit=20` when Obsidian is running.
+3. `memex read "<Page>"`. Search results show each page's length: for pages over 150 lines, `memex outline "<Page>"` first, then `memex read "<Page>#<Heading>"` for the sections you need. `memex related "<Page>"` when you need its neighbours (backlinks, outlinks, co-cited pages). Re-open the cited raw sections for exact details.
 4. If the wiki lacks the answer, search `raw/` and `journal/` and say so. Never claim "nothing in Memex" unless both the index and full-text search came back empty.
 
 **Consult Memex first** before answering about a person, project, system, decision or past event; before drafting an email, status update or meeting prep; and when a command fails twice (look for a known fix).
 
 ## Special files
 - `wiki/index.md` and one `<Domain> Index` per domain are **generated** by `memex index` from each page's `summary`. Never hand-edit them; improve summaries instead. They are rebuilt at session start too.
-- `wiki/log.md` is append-only. Each entry is `## [YYYY-MM-DD] op | title` followed by bullets naming the pages touched. Ops: `ingest inbox save lint today close weekly merge schema setup`.
+- `wiki/log.md` is append-only. Each entry is `## [YYYY-MM-DD] op | title` followed by bullets naming the pages touched. Ops: `ingest inbox harvest save lint today close weekly merge schema setup`.
 - `wiki/hot.md` holds the current focus, active projects, open loops and recent decisions. Rewrite it (never append) during `/close` and `/weekly`.
 
 ## After every write operation
 1. Append the log entry.
-2. `memex commit "<op>: <title>"`. It rebuilds the indexes, runs `memex lint --quick` and commits only the vault, as the vault's identity. If lint reports errors, fix the ones you caused and run it again. Never push.
+2. `memex commit "<op>: <title>"`. It rebuilds the indexes, runs `memex lint --quick` and commits only the vault, as the vault's identity (and pushes, when the owner attached a private remote). If lint reports errors, fix the ones you caused and run it again.
 
 ## Tools
-- **memex CLI** (`memex`; if it isn't on PATH, `python3 "{{FRAMEWORK}}/tools/memex.py"`): `search`, `read`, `context`, `capture`, `rm`, `commit`, `index`, `lint`, `ctx`, `sync`, `doctor`. It works the same in every agent and without Obsidian.
+- **memex CLI** (`memex`; if it isn't on PATH, `python3 "{{FRAMEWORK}}/tools/memex.py"`): `search`, `read`, `outline`, `related`, `context`, `capture`, `file`, `rm`, `commit`, `harvest`, `backup`, `pull`, `push`, `remote` (status), `index`, `lint`, `ctx`, `sync`, `doctor`. It works the same in every agent and without Obsidian. `memex remote set|remove`, `memex move` and `memex uninstall` are the owner's; the guard blocks them.
 - **Obsidian CLI** (the app must be running; cwd is the vault): `search`, `search:context`, `backlinks`, `links`, `orphans`, `deadends`, `unresolved`, `aliases`, `properties`, `tags`, `tasks`, `daily:read`, `base:query`, `move`, `rename`.
-- Move or rename files **only** with `obsidian move path="…" to="…"` or `obsidian rename`, which keep links intact. Never use `mv`.
+- File inbox items into `raw/` with `memex file`. Move or rename anything else **only** with `obsidian move path="…" to="…"` or `obsidian rename`, which keep links intact. Never use `mv`.
 - Long sources (>5k words, PDFs, transcripts): delegate reading to the `source-reader` subagent (Claude Code), or read the source section by section yourself, then write the pages.
 - Web pages: the owner clips them with the Web Clipper into `inbox/`. From a bare URL, use `defuddle parse "<url>" --md -o "inbox/<YYYY-MM-DD> <Title>.md"` if it's installed; otherwise ask the owner to clip it. Never store a model-generated summary as a raw source.
 - Images in a clip: `obsidian open path="<file>"` then `obsidian command id=editor:download-attachments` (they land in `raw/assets/`).

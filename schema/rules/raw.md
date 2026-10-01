@@ -12,7 +12,7 @@ paths:
   - Redact secrets and personal IDs (`[REDACTED: password]`).
   - Add missing raw frontmatter.
   Redact them yourself (when unsure, redact), note them in a `> [!warning] Redacted at filing` callout on the source page, and list them in your report. Pasted text gets the same treatment before you save it.
-- **Filing from inbox**: decide the domain (one of this vault's domains). Read the whole file first. Then `obsidian move path="inbox/<file>" to="raw/<domain>/<YYYY-MM-DD> <Title>.md"`, so the date and title in the name are correct.
+- **Filing from inbox**: decide the domain (one of this vault's domains). Read the whole file first. Then `memex file "inbox/<file>" --domain <domain> --name "<YYYY-MM-DD> <Title>.md"` (it fixes links if the name changes; `obsidian move` also works), so the date and title in the name are correct.
 - Files you may create directly in `raw/`: pasted text the owner gives you, MCP snapshots (minimal: key, title, role, outcome, link), transcripts. Save the content verbatim; never store your own summary as a raw source.
 - Long books or courses: one raw file per chapter or module (`YYYY-MM-DD Book Title - Ch 03 Name.md`).
 - PDFs and images stay in `raw/assets/` (or next to their note). Reference them from a small raw `.md` stub that carries the frontmatter.

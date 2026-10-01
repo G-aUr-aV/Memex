@@ -6,7 +6,7 @@
 prefix_rule(
     pattern = ["python3", "{{MEMEX_PY}}"],
     decision = "allow",
-    justification = "Memex CLI from the framework: commits and trash moves stay inside the vault, never pushes",
+    justification = "Memex CLI from the framework: writes stay inside the vault; pushes only to the owner's private remote",
 )
 prefix_rule(
     pattern = ["memex"],
@@ -154,19 +154,54 @@ prefix_rule(
     justification = "GitHub, read-only (/weekly)",
 )
 prefix_rule(
-    pattern = ["git", "remote", "add"],
+    pattern = ["git", "remote"],
     decision = "forbidden",
-    justification = "The Memex vault is local-only: it never gets a remote",
-)
-prefix_rule(
-    pattern = ["git", "remote", "set-url"],
-    decision = "forbidden",
-    justification = "The Memex vault is local-only: it never gets a remote",
+    justification = "Only the owner attaches the vault's remote (memex remote set)",
 )
 prefix_rule(
     pattern = ["git", "push"],
     decision = "forbidden",
-    justification = "Memex never publishes, pushes or deletes through these; see AGENTS.md",
+    justification = "The vault syncs through memex commit / memex push, never a raw git push",
+)
+prefix_rule(
+    pattern = ["memex", "remote", "set"],
+    decision = "forbidden",
+    justification = "Owner only: it sends the vault elsewhere, moves it or removes it",
+)
+prefix_rule(
+    pattern = ["python3", "{{MEMEX_PY}}", "remote", "set"],
+    decision = "forbidden",
+    justification = "Owner only: it sends the vault elsewhere, moves it or removes it",
+)
+prefix_rule(
+    pattern = ["memex", "remote", "remove"],
+    decision = "forbidden",
+    justification = "Owner only: it sends the vault elsewhere, moves it or removes it",
+)
+prefix_rule(
+    pattern = ["python3", "{{MEMEX_PY}}", "remote", "remove"],
+    decision = "forbidden",
+    justification = "Owner only: it sends the vault elsewhere, moves it or removes it",
+)
+prefix_rule(
+    pattern = ["memex", "move"],
+    decision = "forbidden",
+    justification = "Owner only: it sends the vault elsewhere, moves it or removes it",
+)
+prefix_rule(
+    pattern = ["python3", "{{MEMEX_PY}}", "move"],
+    decision = "forbidden",
+    justification = "Owner only: it sends the vault elsewhere, moves it or removes it",
+)
+prefix_rule(
+    pattern = ["memex", "uninstall"],
+    decision = "forbidden",
+    justification = "Owner only: it sends the vault elsewhere, moves it or removes it",
+)
+prefix_rule(
+    pattern = ["python3", "{{MEMEX_PY}}", "uninstall"],
+    decision = "forbidden",
+    justification = "Owner only: it sends the vault elsewhere, moves it or removes it",
 )
 prefix_rule(
     pattern = ["gh", "pr", "merge"],

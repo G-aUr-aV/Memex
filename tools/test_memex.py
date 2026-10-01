@@ -45,6 +45,11 @@ SEED = {
 FAKE_KEY = "AKIA" + "ABCDEFGHIJKLMNOP"  # matches the AWS pattern; split so this file never matches itself
 
 
+def text(path: Path) -> str:
+    """A file's text, or "" if it doesn't exist (uninstall deletes files that held only Memex's lines)."""
+    return path.read_text() if path.exists() else ""
+
+
 def run(args, cwd, env, stdin=None):
     return subprocess.run([str(a) for a in args], cwd=str(cwd), env=env, input=stdin, capture_output=True, text=True)
 
@@ -213,7 +218,7 @@ class TestGitSafety(Sandbox):
         try:
             r = self.memex("commit", "x: y")
             self.assertNotEqual(r.returncode, 0)
-            self.assertIn("local-only", r.stderr)
+            self.assertIn("weren't attached with `memex remote set`", r.stderr)
         finally:
             self.git("remote", "remove", "origin")
 
@@ -438,6 +443,24 @@ class TestGuard(Sandbox):
         self.assertDenied({"tool_name": "terminal", "tool_input": {"command": f"rm '{OTHER}'"}})
         self.assertDenied({"tool_name": "write_file", "tool_input": {"path": str(self.V / "notes/x.md"), "content": "x"}})
 
+    def test_owner_only_operations(self):
+        bash = lambda c, cwd=None: {"tool_name": "Bash", "tool_input": {"command": c}, "cwd": str(cwd or self.V)}  # noqa: E731
+        for cmd in ("memex remote set git@github.com:me/v.git --yes", "memex remote remove", "memex move ~/elsewhere",
+                    "memex uninstall --delete-vault --confirm x", f"python3 '{self.fw}/tools/memex.py' remote set x",
+                    f"bash '{self.fw}/setup.sh' --remote git@github.com:me/v.git", "bash setup.sh --uninstall",
+                    "bash setup.sh --remove-agents", f"python3 '{self.fw}/tools/vault.py' uninstall",
+                    "git push origin main", "MEMEX_PUSH=1 git push", "git remote add origin x",
+                    "git remote set-url origin x", "git config remote.origin.url x", f"cd /tmp && git -C '{self.V}' push"):
+            in_vault = cmd.startswith(("git", "MEMEX", "cd"))  # the rest are denied from any folder
+            self.assertDenied(bash(cmd, None if in_vault else self.tmp))
+        self.assertIn("run this in their terminal", self.assertDenied(bash("memex uninstall")))
+        for cmd in ("memex remote", "memex pull", "memex pull --merge", "memex push", "memex commit 'x: y'",
+                    "git remote -v", "git config --get remote.origin.url", "bash setup.sh --vault x"):
+            self.assertAllowed(bash(cmd))
+        self.assertAllowed(bash("git push origin main", self.tmp))  # other repos are the agent's business
+        self.assertDenied({"tool_name": "Write", "tool_input": {"file_path": str(self.V / ".memex/remote.json"), "content": "{}"}})
+        self.assertDenied({"tool_name": "terminal", "tool_input": {"command": "memex move /tmp/x"}})
+
     def test_outside_the_vault_and_without_config(self):
         self.assertAllowed({"tool_name": "Write", "tool_input": {"file_path": str(self.tmp / "elsewhere.md"), "content": "x"}})
         self.assertAllowed({"tool_name": "Bash", "tool_input": {"command": "rm -rf build"}, "cwd": str(self.tmp)})
@@ -463,6 +486,22 @@ class TestCLI(Sandbox):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("capture refused", r.stderr)
 
+    def test_file_moves_inbox_items_into_raw(self):
+        (self.V / "inbox/clip.md").write_text("---\ntitle: Clip\n---\nbody\n")
+        page = self.V / "wiki/learning/concepts/Links Clip.md"
+        page.write_text("---\ntype: concept\n---\nSee [[clip#Intro|the clip]] and ![[clip]].\n")
+        r = self.memex("file", "inbox/clip.md", "--domain", "learning", "--name", "2026-09-29 Great Clip.md")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "raw/learning/2026-09-29 Great Clip.md")
+        self.assertIn("[[2026-09-29 Great Clip#Intro|the clip]] and ![[2026-09-29 Great Clip]]", page.read_text())
+        (self.V / "inbox/again.md").write_text("x\n")
+        self.assertNotEqual(self.memex("file", "inbox/again.md", "--domain", "learning", "--name",
+                                       "2026-09-29 Great Clip.md").returncode, 0)  # raw/ is create-only
+        self.assertNotEqual(self.memex("file", PAGE, "--domain", "learning").returncode, 0)  # only inbox items
+        self.assertNotEqual(self.memex("file", "inbox/again.md", "--domain", "nope").returncode, 0)
+        page.unlink()
+        (self.V / "inbox/again.md").unlink()
+
     def test_rm_checks_backlinks(self):
         r = self.memex("rm", PAGE)
         self.assertNotEqual(r.returncode, 0)
@@ -487,6 +526,449 @@ class TestCLI(Sandbox):
         self.assertIn("memex search", json.loads(r.stdout)["context"])
 
 
+class TestRetrieval(Sandbox):
+    def test_bm25_ranks_titles_first(self):
+        out = self.memex("search", "idempotency").stdout.splitlines()
+        self.assertTrue(out[1].startswith(f"- {PAGE}"), out)  # title match beats the body mention in OTHER
+        self.assertIn(OTHER, "\n".join(out))
+        self.assertIn("partial matches", self.memex("search", "idempotency", "zebra").stdout)
+        hits = json.loads(self.memex("search", "retry", "--json").stdout)
+        self.assertEqual(hits[0]["path"], OTHER)
+
+    def test_sections_and_outline(self):
+        r = self.memex("read", "Idempotency Keys#Content")
+        self.assertIn("## Content", r.stdout)
+        self.assertIn("retry safely", r.stdout)
+        self.assertNotIn("## Sources", r.stdout)
+        self.assertNotEqual(self.memex("read", "Idempotency Keys#Nope").returncode, 0)
+        self.assertIn("- Content (", self.memex("outline", "Idempotency Keys").stdout)
+
+    def test_related(self):
+        out = self.memex("related", "Idempotency Keys").stdout
+        self.assertIn(f"## Links here\n- {OTHER}", out)
+        self.assertIn(RAW, out)
+
+
+def claude_transcript(path: Path, extra_calls=4):
+    lines = [
+        {"type": "user", "timestamp": "2026-09-30T10:00:00Z", "gitBranch": "fix/tz",
+         "message": {"role": "user", "content": "Fix the flaky invoice test"}},
+        {"type": "user", "isMeta": True, "message": {"role": "user", "content": "meta noise"}},
+        {"type": "user", "message": {"role": "user", "content": "<command-name>/clear</command-name>"}},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": "Looking."}, {"type": "tool_use", "name": "Bash", "input": {"command": "pytest -k invoice"}}]}},
+        {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "FAILED"}]}},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Edit", "input": {"file_path": "tests/test_invoice.py", "old_string": "a", "new_string": "b"}}]}},
+        {"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": 'git commit -m "fix: freeze time in invoice test"'}}]}},
+        *[{"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": f"ls step{i}"}}]}} for i in range(extra_calls)],
+        {"type": "assistant", "timestamp": "2026-09-30T10:20:00Z", "message": {"role": "assistant", "content": [
+            {"type": "text", "text": f"Root cause: date.today() vs UTC in the fixture. Found {FAKE_KEY} in .env too."}]}},
+    ]
+    path.write_text("".join(json.dumps(l) + "\n" for l in lines))
+
+
+def codex_transcript(path: Path):
+    call = lambda cmd: {"timestamp": "2026-09-30T11:01:00Z", "type": "response_item", "payload": {  # noqa: E731
+        "type": "function_call", "name": "shell", "arguments": json.dumps({"command": ["bash", "-lc", cmd]})}}
+    lines = [
+        {"timestamp": "2026-09-30T11:00:00Z", "type": "session_meta", "payload": {"id": "codex-1"}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "<environment_context>cwd</environment_context>"}]}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "Add retry backoff"}]}},
+        call("pytest tests/"), call("rg retry"), call("ls src"), call("cat src/retry.py"),
+        {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "apply_patch",
+                                              "input": "*** Begin Patch\n*** Update File: src/retry.py\n@@\n-a\n+b\n*** End Patch\n"}},
+        # current Codex "code mode": tools are called from JavaScript inside an exec call
+        {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec", "input":
+            'const r = await tools.exec_command({cmd:"npm test -- retry",workdir:"/x"}); text(JSON.stringify(r))'}},
+        {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "<recommended_plugins>\nsome plugins\n</recommended_plugins>\nAlso add jitter"}]}},
+        {"type": "response_item", "payload": {"type": "message", "role": "assistant", "content": [
+            {"type": "output_text", "text": "Added exponential backoff."}]}},
+    ]
+    path.write_text("".join(json.dumps(l) + "\n" for l in lines))
+
+
+class TestSessions(Sandbox):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.repo = cls.tmp / "code" / "payments-api"
+        cls.repo.mkdir(parents=True)
+        run(["git", "init", "-q"], cls.repo, cls.env)
+        run(["git", "remote", "add", "origin", "git@github.com:acme/payments-api.git"], cls.repo, cls.env)
+        (cls.tmp / "code" / "other").mkdir()
+        system = cls.V / "wiki/engineering/systems/Payments API.md"
+        system.write_text("---\ntype: system\ndomain: engineering\nstatus: active\nsummary: Invoicing service; owns due "
+                          "dates and retries.\ncreated: 2026-09-01\nupdated: 2026-09-20\nrepo: acme/payments-api\n---\n"
+                          "## Open loops\n- Rahul owes: the retry budget numbers\n\n## Tasks\n- [ ] Freeze time in tests\n")
+        (cls.V / "wiki/engineering/decisions/0001 Use UTC Everywhere.md").write_text(
+            "---\ntype: decision\ndomain: engineering\nstatus: accepted\nsummary: Store and compare times in UTC.\n"
+            "created: 2026-09-02\nupdated: 2026-09-02\n---\nApplies to [[Payments API]].\n")
+        cls.transcripts = cls.tmp / "transcripts"
+        cls.transcripts.mkdir()
+        claude_transcript(cls.transcripts / "claude.jsonl")
+        codex_transcript(cls.transcripts / "codex.jsonl")
+        claude_transcript(cls.transcripts / "tiny.jsonl", extra_calls=0)
+        (cls.transcripts / "tiny.jsonl").write_text(json.dumps({"type": "user", "message": {"role": "user", "content": "hi"}}) + "\n")
+
+    def hook(self, event, payload, agent=None):
+        args = ["hook", event] + (["--agent", agent] if agent else [])
+        return self.memex(*args, stdin=json.dumps(payload), cwd=self.tmp)
+
+    def ledger(self):
+        p = self.V / ".memex/sessions.jsonl"
+        return [json.loads(l) for l in p.read_text().splitlines()] if p.exists() else []
+
+    def test_recall_at_session_start(self):
+        out = self.hook("session-start", {"cwd": str(self.repo)}).stdout
+        self.assertIn("[[Payments API]]", out)
+        self.assertIn("open: Freeze time in tests", out)
+        self.assertIn("open: Rahul owes", out)
+        self.assertIn("[[0001 Use UTC Everywhere]] (accepted)", out)
+        self.assertLessEqual(len(out.splitlines()), 15)
+        self.assertEqual(self.hook("session-start", {"cwd": str(self.tmp / "code" / "other")}).stdout, "")
+        self.assertEqual(self.hook("session-start", {"cwd": str(self.V)}).stdout, "")
+
+    def test_ledger_harvest_and_digests(self):
+        import time
+        start = time.time()
+        self.hook("session-end", {"session_id": "claude-sess-0001", "transcript_path": str(self.transcripts / "claude.jsonl"),
+                                  "cwd": str(self.repo), "reason": "prompt_input_exit"}, "claude")
+        self.assertLess(time.time() - start, 1.5)
+        self.hook("session-end", {"session_id": "codex-sess-0002", "transcript_path": str(self.transcripts / "codex.jsonl"),
+                                  "cwd": str(self.repo)}, "codex")
+        self.hook("session-end", {"session_id": "tiny-sess-0003", "transcript_path": str(self.transcripts / "tiny.jsonl"),
+                                  "cwd": str(self.repo)}, "claude")
+        self.hook("session-end", {"session_id": "vault-sess", "cwd": str(self.V)}, "claude")  # vault sessions are skipped
+        self.assertEqual([r["session_id"] for r in self.ledger()], ["claude-sess-0001", "codex-sess-0002", "tiny-sess-0003"])
+        self.assertEqual(self.ledger()[0]["repo"], "payments-api")
+
+        listing = self.memex("harvest").stdout
+        self.assertIn("claude-s", listing)
+        self.assertIn("codex-se", listing)
+        self.assertIn("1 trivial hidden", listing)
+        self.assertIn("tiny-ses", self.memex("harvest", "--all").stdout)
+        self.assertIn("Sessions to harvest: 2", self.memex("ctx", "harvest").stdout)
+
+        r = self.memex("harvest", "--digest", "claude-sess")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("AWS access key", r.stderr)
+        text = (self.V / r.stdout.strip()).read_text()
+        for want in ("Fix the flaky invoice test", "tests/test_invoice.py", "pytest -k invoice",
+                     "fix: freeze time in invoice test", "Root cause: date.today()", "[REDACTED: AWS access key]",
+                     "source_type: session", "branch: fix/tz", "## Turn 1\n**Owner:** Fix the flaky invoice test",
+                     "**Agent:** Root cause: date.today()"):
+            self.assertIn(want, text)
+        for unwanted in (FAKE_KEY, "meta noise", "/clear"):
+            self.assertNotIn(unwanted, text)
+        (self.V / r.stdout.strip()).unlink()
+
+        r = self.memex("harvest", "--digest", "codex-sess")
+        text = (self.V / r.stdout.strip()).read_text()
+        for want in ("Add retry backoff", "src/retry.py", "pytest tests/", "Added exponential backoff.",
+                     "npm test -- retry", "Also add jitter"):
+            self.assertIn(want, text)
+        self.assertNotIn("environment_context", text)
+        self.assertNotIn("recommended_plugins", text)
+        (self.V / r.stdout.strip()).unlink()
+
+        self.assertIn("marked 1", self.memex("harvest", "--skip-trivial").stdout)
+        self.memex("harvest", "--done", "claude-sess")
+        self.memex("harvest", "--done", "codex-sess", "--result", "skipped")
+        self.assertIn("Nothing to harvest", self.memex("harvest").stdout)
+
+    def test_excluded_folders_are_not_recorded(self):
+        settings = self.V / ".memex/vault.json"
+        original = settings.read_text()
+        cfg = json.loads(original)
+        cfg["harvest"]["exclude"] = [str(self.tmp / "code" / "other")]
+        settings.write_text(json.dumps(cfg))
+        try:
+            before = len(self.ledger())
+            self.hook("session-end", {"session_id": "secret-1", "cwd": str(self.tmp / "code" / "other")}, "claude")
+            self.assertEqual(len(self.ledger()), before)
+        finally:
+            settings.write_text(original)
+
+    def test_ledger_is_owner_only_for_agents(self):
+        self.assertDenied({"tool_name": "Write", "tool_input": {"file_path": str(self.V / ".memex/sessions.jsonl"), "content": ""}})
+
+    def test_unknown_transcript_format_is_never_skipped(self):
+        weird = self.transcripts / "weird.jsonl"
+        weird.write_text("".join(json.dumps({"kind": "turn", "n": i, "text": "did things"}) + "\n" for i in range(8)))
+        self.hook("session-end", {"session_id": "weird-sess-0009", "transcript_path": str(weird), "cwd": str(self.repo)}, "claude")
+        self.assertIn("UNPARSED", self.memex("harvest").stdout)
+        self.memex("harvest", "--skip-trivial")
+        out = self.memex("harvest").stdout
+        self.assertIn("weird-se", out)
+        self.assertIn("doesn't recognize", out)
+        self.assertIn("UNPARSED", self.memex("ctx", "harvest").stdout)
+        self.memex("harvest", "--done", "weird-sess", "--result", "skipped")
+
+
+class TestBackup(Sandbox):
+    def test_bundle_restore_and_warnings(self):
+        self.assertIn("! no backup yet", self.memex("doctor").stdout)
+        self.assertIn("Backup: none yet", self.memex("context").stdout)
+        dest = self.tmp / "backups"
+        for _ in range(3):
+            r = self.memex("backup", "--to", str(dest), "--keep", "2")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        bundles = sorted(dest.glob("*.bundle"))
+        self.assertEqual(len(bundles), 2)
+        restored = self.tmp / "restored"
+        self.assertEqual(self.git("clone", "-q", str(bundles[-1]), str(restored), cwd=self.tmp).returncode, 0)
+        self.assertIn("test: seed", self.git("log", "--format=%s", cwd=restored).stdout)
+        self.assertIn("✓ last backup 0 day(s) ago", self.memex("doctor").stdout)
+        self.assertNotIn("Backup:", self.memex("context").stdout)
+        self.assertNotEqual(self.memex("backup", "--to", str(self.V / "outputs")).returncode, 0)
+
+
+class TestRemote(Sandbox):
+    """Machine A (the sandbox vault) and machine B (another HOME) syncing through one bare repository."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.bare = cls.tmp / "remote.git"
+        run(["git", "init", "-q", "--bare", "-b", "main", cls.bare], cls.tmp, cls.env)
+        cls.home_b = cls.tmp / "home-b"
+        cls.home_b.mkdir()
+        cls.env_b = {**cls.env, "HOME": str(cls.home_b), "PATH": f"{cls.home_b}/.local/bin:{os.environ['PATH']}"}
+        cls.VB = cls.tmp / "Vault B"
+
+    def bare_log(self):
+        return self.git("--git-dir", str(self.bare), "log", "--format=%s", "main", cwd=self.tmp).stdout
+
+    def mb(self, *args, stdin=None):
+        return self.memex(*args, stdin=stdin, cwd=self.VB, env=self.env_b)
+
+    def test_a_urls_and_refusals(self):
+        sys.path.insert(0, str(SRC / "tools"))
+        import remote
+        for bad in ("https://me:ghp_secret@github.com/me/v.git", "https://me@github.com/me/v.git"):
+            with self.assertRaises(Exception):
+                remote.check_url(bad)
+        self.assertEqual(remote.check_url("git@github.com:me/v.git"), "git@github.com:me/v.git")
+        self.assertEqual(remote.https_form("git@github.com:Me/Vault.git"), "https://github.com/Me/Vault.git")
+        self.assertEqual(remote.https_form("ssh://git@gitlab.com:22/me/v.git"), "https://gitlab.com/me/v.git")
+        self.assertIsNone(remote.https_form(str(self.bare)))
+        self.assertTrue(remote.same_repo("git@github.com:me/v.git", "https://github.com/me/v"))
+        self.assertFalse(remote.same_repo("git@github.com:me/v.git", "git@github.com:me/w.git"))
+        self.assertEqual(remote.visibility(str(self.bare)), "local")
+        r = self.memex("remote", "set", "https://me:tok@github.com/me/v.git", "--yes")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("token", r.stderr)
+        r = self.memex("remote", "set", str(self.bare))  # no terminal and no --yes
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--yes", r.stderr)
+        self.assertEqual(self.git("remote").stdout.strip(), "")
+        self.assertIn("local-only", self.memex("remote").stdout)
+
+    def test_b_attach_push_and_pre_push(self):
+        r = self.memex("remote", "set", str(self.bare), "--yes")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("attached", r.stdout)
+        self.assertIn("test: seed", self.bare_log())
+        self.assertEqual(self.git("ls-files", ".memex/remote.json").stdout, "")  # machine-local
+        doc = self.memex("doctor")
+        self.assertNotIn("✗", doc.stdout, doc.stdout)
+        self.assertIn("remote origin →", doc.stdout)
+        self.assertIn("off-machine copy", doc.stdout)
+        self.memex("capture", "--title", "Synced Note", "--domain", "learning", stdin="note\n")
+        r = self.memex("commit", "inbox: synced note")
+        self.assertIn("pushed to origin/main", r.stdout)
+        self.assertIn("inbox: synced note", self.bare_log())
+        r = self.git("push", "origin", "main")  # raw pushes are refused, even to the attached remote
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("memex push", r.stderr)
+        other = self.tmp / "other.git"
+        self.git("init", "-q", "--bare", str(other), cwd=self.tmp)
+        r = self.git("push", str(other), "main", env={**self.env, "MEMEX_PUSH": "1"})
+        self.assertIn("pushes only to", r.stderr)
+        leak = self.V / "wiki/learning/concepts/Leak.md"  # a secret that got past pre-commit stops at push
+        leak.write_text(f"key {FAKE_KEY}\n")
+        self.git("add", str(leak))
+        self.git("commit", "-q", "--no-verify", "-m", "leak")
+        self.assertIn("possible secrets", self.memex("push").stdout)
+        self.assertNotIn("leak", self.bare_log())
+        self.git("reset", "-q", "--hard", "HEAD~1")
+        self.assertIn("nothing to push", self.memex("push").stdout)
+
+    def test_c_second_machine_joins_and_syncs(self):
+        r = run(["bash", self.fw / "setup.sh", "--vault", self.VB, "--remote", self.bare, "--agents", "none"],
+                self.tmp, self.env_b, stdin="")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("joined the vault", r.stdout)
+        self.assertTrue((self.VB / PAGE).exists())
+        self.assertIn(str(self.VB), (self.VB / "AGENTS.md").read_text())  # rendered for this machine
+        self.assertNotIn("✗", self.mb("doctor").stdout)
+        self.mb("capture", "--title", "From B", "--domain", "learning", stdin="b\n")
+        self.assertIn("pushed", self.mb("commit", "inbox: from b").stdout)
+        self.assertIn("Sync: pulled 1 commit(s)", self.memex("context").stdout)  # A's next session
+        self.assertTrue(list((self.V / "inbox").glob("* From B.md")))
+        for vault, memex, who in ((self.V, self.memex, "a"), (self.VB, self.mb, "b")):  # both append to the log
+            log = vault / "wiki" / "log.md"
+            log.write_text(log.read_text().rstrip("\n") + f"\n\n## [2026-10-01] note | from {who}\n")
+            r = memex("commit", f"log: from {who}")
+            self.assertIn("pushed", r.stdout, r.stdout + r.stderr)  # B's push is rejected, rebases (union merge), pushes
+        self.assertIn("from a", (self.VB / "wiki/log.md").read_text())
+        self.memex("pull")
+        self.assertIn("from b", (self.V / "wiki/log.md").read_text())
+
+    def test_d_conflict_is_reported_then_resolved(self):
+        a, b = self.V / OTHER, self.VB / OTHER
+        a.write_text(a.read_text().replace("Related:", "Related (A):"))
+        self.assertIn("pushed", self.memex("commit", "edit: a").stdout)
+        b.write_text(b.read_text().replace("Related:", "Related (B):"))
+        r = self.mb("commit", "edit: b")
+        self.assertIn("CONFLICT", r.stdout)
+        self.assertIn("Related (B):", b.read_text())  # nothing changed here
+        self.assertNotIn("<<<<<<<", b.read_text())
+        self.assertIn("CONFLICT", self.mb("context").stdout)
+        r = self.mb("pull", "--merge")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn(OTHER, r.stdout)
+        self.assertIn("<<<<<<<", b.read_text())
+        r = self.mb("commit", "merge: sync")  # markers still in: refused
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("unresolved merge conflicts", r.stdout + r.stderr)
+        b.write_text(re.sub(r"<<<<<<< [^\n]*\n(.*?)=======\n.*?>>>>>>> [^\n]*\n", r"\1", b.read_text(), flags=re.S)
+                     .replace("Related (B):", "Related (A, B):"))
+        r = self.mb("commit", "merge: sync")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("pushed", r.stdout)
+        self.assertNotIn("✗", self.mb("doctor").stdout)
+        self.memex("pull")
+        self.assertIn("Related (A, B):", a.read_text())
+
+    def test_e_offline_keeps_commits_local(self):
+        away = self.tmp / "remote-away.git"
+        shutil.move(str(self.bare), str(away))
+        try:
+            self.memex("capture", "--title", "Offline", "--domain", "learning", stdin="x\n")
+            r = self.memex("commit", "inbox: offline")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("push failed", r.stdout)
+            self.assertIn("Sync: offline", self.memex("context").stdout)
+        finally:
+            shutil.move(str(away), str(self.bare))
+        self.assertIn("pushed", self.memex("commit", "retry").stdout)
+        self.assertIn("inbox: offline", self.bare_log())
+
+    def test_f_remove_makes_it_local_only_again(self):
+        self.assertIn("local-only again", self.mb("remote", "remove").stdout)
+        self.assertEqual(self.git("remote", cwd=self.VB).stdout.strip(), "")
+        r = self.git("push", str(self.bare), "main", cwd=self.VB)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("local-only", r.stderr)
+
+
+class TestMove(Sandbox):
+    def test_move_repoints_everything(self):
+        busy = self.tmp / "busy"
+        busy.mkdir()
+        (busy / "x").write_text("x")
+        r = self.memex("move", str(busy), cwd=self.tmp)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("isn't empty", r.stderr)
+        other = self.tmp / "repo"
+        other.mkdir()
+        self.git("init", "-q", cwd=other)
+        self.assertIn("inside another git repository", self.memex("move", str(other / "v"), cwd=self.tmp).stderr)
+        head = self.git("rev-parse", "HEAD").stdout
+        dest = self.tmp / "Moved" / "Vault"
+        r = self.memex("move", str(dest), cwd=self.tmp)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.V.exists())
+        self.assertEqual(self.git("rev-parse", "HEAD", cwd=dest).stdout, head)
+        self.assertEqual(Path(self.memex("path", cwd=self.tmp).stdout.strip()), dest)
+        agents = (dest / "AGENTS.md").read_text()
+        self.assertIn(str(dest), agents)
+        self.assertNotIn(str(self.V), agents)
+        allow = json.loads((self.home / ".claude/settings.json").read_text())["permissions"]["allow"]
+        self.assertIn(f"Read(/{dest}/**)", allow)
+        self.assertNotIn(f"Read(/{self.V}/**)", allow)
+        codex = (self.home / ".codex/config.toml").read_text()
+        self.assertIn(f'"{dest}"', codex)
+        self.assertNotIn(f'"{self.V}"', codex)
+        self.assertIn(str(dest), (self.home / ".claude/CLAUDE.md").read_text())
+        self.assertNotIn("✗", self.memex("doctor", cwd=dest).stdout)
+
+
+class TestUninstall(Sandbox):
+    def uninstall(self, *args, env=None):
+        return run([PY, self.fw / "tools" / "vault.py", "uninstall", *args], self.tmp, env or self.env, stdin="")
+
+    def leftovers(self, vault=None, env=None):
+        return run([PY, self.fw / "tools" / "vault.py", "leftovers", *(["--vault", vault] if vault else [])],
+                   self.tmp, env or self.env)
+
+    def test_a_keep_the_vault(self):
+        self.assertNotEqual(self.leftovers().returncode, 0)  # wired up: plenty to find
+        head = self.git("rev-parse", "HEAD").stdout
+        r = self.uninstall()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("✓ no Memex wiring left", r.stdout)
+        self.assertEqual(self.leftovers(self.V).returncode, 0)
+        for gone in (".local/bin/memex", ".claude/skills/memex", ".agents/skills/memex", ".hermes/skills/memex",
+                     ".codex/rules/memex.rules", ".config/memex"):
+            self.assertFalse((self.home / gone).exists(), gone)
+        self.assertNotIn("memex:begin", text(self.home / ".claude/CLAUDE.md"))
+        self.assertNotIn(str(self.fw), text(self.home / ".claude/settings.json"))
+        self.assertNotIn(str(self.V), text(self.home / ".codex/config.toml"))
+        for empty in (".claude/settings.json", ".claude/CLAUDE.md", ".codex/AGENTS.md", ".agents"):
+            self.assertFalse((self.home / empty).exists(), f"{empty}: held only Memex's lines, so it's removed")
+        self.assertFalse((self.fw / ".git/hooks/pre-commit").exists())
+        self.assertTrue((self.V / PAGE).exists())  # knowledge and history kept
+        self.assertEqual(self.git("merge-base", "--is-ancestor", head.strip(), "HEAD").returncode, 0)
+        for gone in ("AGENTS.md", "CLAUDE.md", ".claude/skills", ".memex/state.json", ".git/hooks/pre-commit"):
+            self.assertFalse((self.V / gone).exists(), gone)
+        self.assertIn("local-only", (self.V / ".git/hooks/pre-push").read_text())
+        self.assertTrue(list((self.home / "Memex Backups").rglob("*.bundle")))
+
+    def test_b_delete_the_vault(self):
+        v2 = self.tmp / "Second Vault"
+        r = run(["bash", self.fw / "setup.sh", "--vault", v2, "--agents", "all"], self.tmp, self.env, stdin="")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r = self.uninstall("--delete-vault", "--confirm", "wrong name")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn('--confirm "Second Vault"', r.stderr)
+        self.assertTrue((v2 / ".memex/vault.json").exists())
+        self.assertTrue((self.home / ".local/bin/memex").exists())  # nothing was changed
+        claude_md, settings = self.home / ".claude/CLAUDE.md", self.home / ".claude/settings.json"
+        claude_md.write_text("# My own instructions\n\n" + claude_md.read_text())  # the owner's lines must survive
+        cfg = json.loads(settings.read_text())
+        cfg["theme"] = "dark"
+        cfg["permissions"]["allow"].append("Bash(ls *)")
+        settings.write_text(json.dumps(cfg))
+        r = self.uninstall("--delete-vault", "--confirm", "Second Vault")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(v2.exists())
+        self.assertEqual(claude_md.read_text().strip(), "# My own instructions")
+        self.assertEqual(json.loads(settings.read_text()), {"theme": "dark", "permissions": {"allow": ["Bash(ls *)"]}})
+        bundles = list((self.home / "Memex Backups" / "Second-Vault").glob("*.bundle"))
+        self.assertTrue(bundles)
+        restored = self.tmp / "restored-v2"
+        self.assertEqual(self.git("clone", "-q", str(bundles[0]), str(restored), cwd=self.tmp).returncode, 0)
+        self.assertEqual(self.leftovers(v2).returncode, 0)
+
+    def test_c_vault_already_deleted_by_hand(self):
+        v3 = self.tmp / "Third Vault"
+        r = run(["bash", self.fw / "setup.sh", "--vault", v3, "--agents", "all"], self.tmp, self.env, stdin="")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        shutil.rmtree(v3)
+        r = self.uninstall()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("already gone", r.stdout)
+        self.assertEqual(self.leftovers(v3).returncode, 0)
+
+
 class TestSkills(unittest.TestCase):
     """Skills and docs must only use commands and flags that exist (no sandbox needed)."""
 
@@ -506,9 +988,9 @@ class TestSkills(unittest.TestCase):
         self.assertEqual(os.readlink(SRC / ".agents" / "skills"), "../.claude/skills")
         setup = (SRC / "setup.sh").read_text()
         used = set()
-        for doc in (skill, SRC / "README.md"):
+        for doc in (skill, SRC / "README.md", SRC / ".claude" / "skills" / "memex-uninstall" / "SKILL.md"):
             for m in re.finditer(r"bash setup\.sh([^`#\n)]*)", doc.read_text()):
-                used |= set(re.findall(r"(--[a-z-]+)", m.group(1)))
+                used |= set(re.findall(r"(--[a-z-]+)", m.group(1).split("--uninstall")[0]))
         self.assertIn("--vault", used)
         for flag in used:
             self.assertIn(f"{flag})", setup, f"docs use unknown setup.sh flag {flag}")
@@ -525,14 +1007,23 @@ class TestIntegration(Sandbox):
         codex = (self.home / ".codex/config.toml").read_text()
         self.assertIn(f'[projects."{self.V}"]', codex)
         self.assertIn("memex:begin", (self.home / ".hermes/config.yaml").read_text())
+        hooks = json.loads((self.home / ".claude/settings.json").read_text())["hooks"]
+        self.assertIn("hook session-start", hooks["SessionStart"][0]["hooks"][0]["command"])
+        self.assertIn("hook session-end --agent claude", hooks["SessionEnd"][0]["hooks"][0]["command"])
+        codex_hooks = json.loads((self.home / ".codex/hooks.json").read_text())["hooks"]
+        self.assertIn("hook session-end --agent codex", codex_hooks["SessionEnd"][0]["hooks"][0]["command"])
+        # re-running setup doesn't duplicate hooks
+        run(["bash", self.fw / "setup.sh", "--vault", self.V, "--agents", "all"], self.tmp, self.env)
+        hooks = json.loads((self.home / ".claude/settings.json").read_text())["hooks"]
+        self.assertEqual([len(hooks[e]) for e in ("PreToolUse", "SessionStart", "SessionEnd")], [1, 1, 1])
 
     def test_z_remove(self):
         r = run(["bash", self.fw / "setup.sh", "--remove-agents"], self.tmp, self.env)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertFalse((self.home / ".local/bin/memex").exists())
-        settings = json.loads((self.home / ".claude/settings.json").read_text())
+        settings = json.loads(text(self.home / ".claude/settings.json") or "{}")
         self.assertNotIn("hooks", settings)
-        self.assertNotIn("memex:begin", (self.home / ".claude/CLAUDE.md").read_text())
+        self.assertNotIn("memex:begin", text(self.home / ".claude/CLAUDE.md"))
 
 
 if __name__ == "__main__":
