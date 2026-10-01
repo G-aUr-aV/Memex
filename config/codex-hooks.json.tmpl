@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{MEMEX}} context",
+            "timeout": 30,
+            "statusMessage": "Loading Memex context"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "apply_patch|Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{GUARD}}",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,16 +1,21 @@
-# Obsidian UI state (changes constantly)
-.obsidian/workspace.json
-.obsidian/workspace-mobile.json
-.obsidian/cache
-# Plugin data can hold API keys
-.obsidian/plugins/*/data.json
+# The framework holds no knowledge. A vault created inside this folder (setup.sh's default when you run it
+# from here) is its own git repo and stays invisible to this one; setup.sh adds any other
+# in-framework vault path to .git/info/exclude. The pre-commit hook and CI refuse these paths as well.
+/MemexVault/
+/wiki/
+/raw/
+/inbox/
+/journal/
+/notes/
+/outputs/
+/.memex/
+/meta/
+/Home.md
+/Memex Manual.md
+# Obsidian, if this folder is ever opened as a vault (open the vault folder instead)
+/.obsidian/
 .trash/
 .DS_Store
-# Claude Code personal overrides
 .claude/settings.local.json
-# Python cache
 __pycache__/
 *.pyc
-# Large media you may not want in history (uncomment to exclude)
-# raw/assets/**/*.mp4
-# raw/assets/**/*.mov

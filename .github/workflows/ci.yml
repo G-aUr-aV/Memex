@@ -20,16 +20,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - name: The framework holds no knowledge
+        run: |
+          if git ls-files -- wiki raw inbox journal notes outputs .memex meta Home.md | grep .; then
+            echo "::error::knowledge files are tracked in the framework repo"; exit 1
+          fi
+          if git ls-files -s | awk '$1 == "160000"' | grep .; then
+            echo "::error::an embedded repository (a vault?) is tracked"; exit 1
+          fi
       - name: Shell syntax
-        run: bash -n meta/tools/setup.sh meta/tools/setup-qmd.sh .claude/hooks/session_start.sh
-      - name: JSON configs parse
+        run: bash -n setup.sh tools/setup-qmd.sh
+      - name: Config templates parse
         run: |
-          python -m json.tool .claude/settings.json > /dev/null
-          python -m json.tool .codex/hooks.json > /dev/null
-      - name: Tests (temporary vault, fake HOME)
-        run: |
-          git config --global user.name "CI"
-          git config --global user.email "ci@localhost"
-          python meta/tools/test_memex.py
-      - name: Lint the vault
-        run: python meta/tools/lint.py
+          python -m json.tool config/claude-settings.json.tmpl > /dev/null
+          python -m json.tool config/codex-hooks.json.tmpl > /dev/null
+          python -m json.tool schema/domains.json > /dev/null
+      - name: Tests (temporary framework copy and vault, fake HOME and git config)
+        run: python tools/test_memex.py
