@@ -461,6 +461,28 @@ class TestGuard(Sandbox):
         self.assertDenied({"tool_name": "Write", "tool_input": {"file_path": str(self.V / ".memex/remote.json"), "content": "{}"}})
         self.assertDenied({"tool_name": "terminal", "tool_input": {"command": "memex move /tmp/x"}})
 
+    def test_agents_outside_the_vault_only_capture(self):
+        out = str(self.tmp)  # a session in another project
+        bash = lambda c: {"tool_name": "Bash", "tool_input": {"command": c}, "cwd": out}  # noqa: E731
+        patch = f"*** Begin Patch\n*** Add File: {self.V / 'wiki/learning/concepts/New.md'}\n+x\n*** End Patch\n"
+        for payload in (
+                {"tool_name": "Write", "cwd": out, "tool_input": {"file_path": str(self.V / "wiki/learning/concepts/New.md"), "content": "x"}},
+                {"tool_name": "Edit", "cwd": out, "tool_input": {"file_path": str(self.V / PAGE), "old_string": "## Content", "new_string": "## Details"}},
+                {"tool_name": "Write", "cwd": out, "tool_input": {"file_path": str(self.V / "inbox/Direct.md"), "content": "x"}},
+                {"tool_name": "apply_patch", "cwd": out, "tool_input": {"command": patch}},
+                {"tool_name": "write_file", "cwd": out, "tool_input": {"path": str(self.V / "outputs/x.md"), "content": "x"}},
+                bash(f"echo x >> '{self.V / PAGE}'"), bash(f"sed -i '' 's/a/b/' '{self.V / OTHER}'"),
+                bash(f"cp notes.txt '{self.V}/wiki/x.md'"), bash(f"mv '{self.V / OTHER}' old.md"),
+                bash(f"cd '{self.V}' && echo x > wiki/y.md"), bash(f"rm '{self.V / OTHER}'"),
+                bash(f"memex rm '{OTHER}'"), bash("memex file 'inbox/2026-09-27 Some Capture.md' --domain learning"),
+                bash("obsidian move path=wiki/a.md to=wiki/b.md")):
+            self.assertIn("memex capture", self.assertDenied(payload))
+        for cmd in ("memex capture --title X --domain learning --why y", "memex search retry", f"cat '{self.V / PAGE}'",
+                    "memex read 'Idempotency Keys'", "obsidian search query=retry", "echo x > notes.txt"):
+            self.assertAllowed(bash(cmd))
+        self.assertAllowed(self.edit(PAGE, "## Content", "## Details"))  # the same edit from a vault session
+        self.assertAllowed({"tool_name": "Bash", "tool_input": {"command": f"echo x > '{self.V}/inbox/x.md'"}})
+
     def test_outside_the_vault_and_without_config(self):
         self.assertAllowed({"tool_name": "Write", "tool_input": {"file_path": str(self.tmp / "elsewhere.md"), "content": "x"}})
         self.assertAllowed({"tool_name": "Bash", "tool_input": {"command": "rm -rf build"}, "cwd": str(self.tmp)})
@@ -1004,6 +1026,8 @@ class TestIntegration(Sandbox):
         self.assertIn("memex:begin", (self.home / ".claude/CLAUDE.md").read_text())
         allow = json.loads((self.home / ".claude/settings.json").read_text())["permissions"]["allow"]
         self.assertIn(f"Read(/{self.V}/**)", allow)
+        self.assertFalse([e for e in allow if e.startswith("Edit(")], allow)  # other projects write via memex capture
+        self.assertNotIn("small direct fix", (self.home / ".claude/CLAUDE.md").read_text().lower())
         codex = (self.home / ".codex/config.toml").read_text()
         self.assertIn(f'[projects."{self.V}"]', codex)
         self.assertIn("memex:begin", (self.home / ".hermes/config.yaml").read_text())

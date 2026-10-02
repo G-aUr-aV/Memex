@@ -81,9 +81,10 @@ def pointer() -> str:
 Use it on your own initiative. You don't need to ask the owner first; these commands are pre-approved.
 - **Look up** before answering about the owner's projects, people, decisions or past work, before drafting status updates, and when a command fails twice: `memex search <terms>`, then `memex read "<Page>"`.
 - **Capture** anything durable this session produces (a root cause, a decision and its reason, a gotcha, a command that worked, a preference the owner states): `memex capture --title "<Title>" --domain <{d}> --why "<one line>"` with the note on stdin (3-20 lines, via a heredoc). Say the captured path in one line at the end of your reply.
-- **Change or remove** existing knowledge: capture with `--action update|supersede|delete --target "<Page>"`, which is applied at the next inbox run. For a small direct fix, first read `{v}/AGENTS.md`, edit the page, then `memex commit "edit: <what>"`. Remove files only with `memex rm <path>`.
+- **Change or remove** existing knowledge: capture with `--action update|supersede|delete --target "<Page>"` and say what's wrong and why in the note. A session in the vault applies it at its next inbox run.
+- **The inbox is the only way in from here.** Don't edit, move or delete files in the vault yourself; the guard refuses, so use `memex capture`.
 - Sessions are recorded when they end and compiled by `/harvest`, but capture decisive findings right away: the harvest only sees what the transcript shows.
-- Never capture secrets, credentials or other people's personal data. Never add a git remote to the vault or push it yourself: `memex commit` syncs it when the owner has attached a private remote."""
+- Never capture secrets, credentials or other people's personal data. Never add a git remote to the vault or push it."""
 
 
 def safety_notes(v: Path):

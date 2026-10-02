@@ -325,7 +325,7 @@ What setup adds for each agent:
 
 | Agent | Setup adds |
 |---|---|
-| Claude Code | the `memex` skill; a Memex block in `~/.claude/CLAUDE.md`; in `~/.claude/settings.json`, pre-approval for `memex`, vault reads and edits of `wiki/`, `inbox/` and `outputs/`, the guard hook, and the SessionStart/SessionEnd hooks |
+| Claude Code | the `memex` skill; a Memex block in `~/.claude/CLAUDE.md`; in `~/.claude/settings.json`, pre-approval for `memex` and vault reads (no direct edits: other projects write through `memex capture`), the guard hook, and the SessionStart/SessionEnd hooks |
 | Codex | the `memex` skill in `~/.agents/skills`; a block in `~/.codex/AGENTS.md`; the vault marked trusted and writable in `~/.codex/config.toml`; `memex` allowed in `~/.codex/rules/`; the guard and session hooks in `~/.codex/hooks.json` |
 | Hermes | the `memex` skill; guard and session-context hooks in `~/.hermes/config.yaml` (with repo recall on the first turn); `hermes skills trust` for the vault's own skills. There's no session ledger for Hermes yet |
 
@@ -352,6 +352,7 @@ flowchart LR
 | `> [!mine]` blocks survive verbatim; whole-page rewrites can't shrink a page by more than 30% | `guard.py` |
 | Deletions go through `memex rm`; agents can't delete or move the vault's folder, attach a remote, or uninstall | `guard.py`, `memex.py`, deny rules for Claude Code and Codex |
 | Rendered framework files and `.memex/vault.json` can't be edited in the vault | `guard.py` |
+| Agents in other projects change the vault only through the inbox (`memex capture`, with `--action update\|supersede\|delete` for existing pages), never by editing its files | `guard.py`, the global instructions and permissions |
 | No secrets in commits; no changes to existing `raw/` files; only the vault identity commits | the vault's pre-commit hook ([`precommit.py`](tools/precommit.py)) |
 | The vault is pushed only to the private remote you attached, only by `memex push`, never to a public repo, never with secrets | its pre-push hook, `memex commit`/`memex push` (visibility check), `guard.py` |
 | The framework never tracks knowledge | `.gitignore`, the framework's pre-commit hook, CI |

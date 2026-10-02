@@ -101,9 +101,11 @@ Plain requests work too: "add this to Memex", "what do I know about X", "prep me
 ### Any agent, any project
 | Agent | In the vault | From any other project | Set up by `setup.sh` |
 |---|---|---|---|
-| Claude Code | `CLAUDE.md`, skills, rules, session and guard hooks | the `memex` skill and a Memex block in `~/.claude/CLAUDE.md` | pre-approved `memex`, vault reads, and edits of `wiki/ inbox/ outputs/`; guard hook in `~/.claude/settings.json` |
+| Claude Code | `CLAUDE.md`, skills, rules, session and guard hooks | the `memex` skill and a Memex block in `~/.claude/CLAUDE.md` | pre-approved `memex` and vault reads; guard hook in `~/.claude/settings.json` |
 | Codex | `AGENTS.md`, skills via `.agents/skills`, `.codex/hooks.json`, `.codex/rules/` | the `memex` skill (`~/.agents/skills`) and a block in `~/.codex/AGENTS.md` | vault trusted and writable (`~/.codex/config.toml`), `memex` allowed (`~/.codex/rules/`), guard hook in `~/.codex/hooks.json` |
 | Hermes | `AGENTS.md`, skills via `.agents/skills` (after `hermes skills trust`) | the `memex` skill and context injected on each session's first turn | guard and context hooks in `~/.hermes/config.yaml` |
+
+From any other project, agents read Memex and add to its inbox with `memex capture`. That includes corrections and removals (`--action update|supersede|delete --target "<Page>"`). They never edit the vault's files directly, and the guard enforces this. A session in the vault applies the inbox under the vault's full rules, at the latest at your `/close`.
 
 **Automatic memory.** Setup adds two global hooks for Claude Code and Codex:
 - **Session start, in any repo:** the agent gets what Memex knows about that repo (pages whose `repo:` matches, with open loops and decisions).
