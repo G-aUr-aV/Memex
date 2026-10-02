@@ -34,7 +34,7 @@ Memex/                      FRAMEWORK: code only. Clone it on every machine; pus
 | Agent config | `config/*.tmpl` | vault permissions, SessionStart and guard hooks for Claude Code and Codex | rendered into `.claude/settings.json`, `.codex/` |
 | Render & sync | `tools/vault.py` | `outputs()` is the render map; `sync()` writes it, backs up hand edits, updates `.git/info/exclude` and `.memex/state.json` | `memex sync`, `memex context` (session start), setup |
 | Git safety | `tools/vault.py` (`harden_git`, `commit`), `tools/precommit.py` | local identity, no signing, local hooksPath, pre-commit and pre-push hooks; commits with the identity in the env | `memex init`, setup, `memex commit`, `git commit` |
-| Guard | `hooks/guard.py` | blocks tool calls that break the ownership table, touch managed or owner-only files, or endanger the vault's folder | every agent's pre-tool hook (vault and global config) |
+| Guard | `hooks/guard.py` | blocks tool calls that break the ownership table, touch managed or owner-only files, endanger the vault's folder, write into the vault from a session outside it, or run owner-only commands | every agent's pre-tool hook (vault and global config) |
 | CLI | `tools/memex.py` | `path context search read outline related capture file rm commit ctx index lint harvest backup pull push remote move uninstall init sync doctor hook` | agents in any project, skills, hooks, the shell |
 | Index, lint, context | `tools/build_index.py`, `tools/lint.py`, `tools/context.py` | generated indexes; deterministic checks; live context for skills | `memex index`, `memex lint`, `memex ctx`, `memex commit` |
 | Secrets | `tools/secretscan.py` | the patterns shared by lint, capture, pre-commit and session digests (`redact`) | — |
@@ -109,13 +109,16 @@ Each layer catches what the one above can miss. Prose alone is advice.
 | Vault hooks | `.claude/settings.json` | `.codex/hooks.json` (trusted project) | none per project; global `~/.hermes/config.yaml` |
 | Guard payload | `tool_name` Edit/Write/MultiEdit/NotebookEdit/Bash | `apply_patch` (patch text in `tool_input.command`), `Bash` (string or argv) | `write_file`, `patch` (replace or V4A patch), `terminal` |
 | Block signal | exit 2 + stderr | exit 2 + stderr | exit 2 + stderr |
-| No-prompt access from other projects | allow rules in `~/.claude/settings.json` | `~/.codex/rules/memex.rules` + writable root in `~/.codex/config.toml` | file tools aren't gated; hooks are approved once |
+| No-prompt access from other projects | allow rules in `~/.claude/settings.json` (`memex`, vault reads) | `~/.codex/rules/memex.rules` + writable root in `~/.codex/config.toml` | file tools aren't gated; hooks are approved once |
+
+From other projects, agents read the vault and write only through `memex capture`, which drops a file into `inbox/`. The guard decides "outside" from the session's `cwd`, not from a `cd` inside a shell command. Outside the vault it refuses file-tool writes, shell writes, `memex rm`/`memex file` and `obsidian` writes into the vault. Only sessions in the vault compile, edit and delete.
 
 The vault's guard hook command is byte-identical to the global one (`memexlib.guard_command()`), so Claude Code runs it once. Hook commands use absolute framework paths. Permission rules use the `memex` shim, because paths with spaces don't match reliably in Bash rules.
 
 ## Invariants: keep these true
 
 - **The framework holds no knowledge**. **A vault has no remote except the one private remote the owner attached**, is never pushed anywhere else, and only has commits by its own identity.
+- **The inbox is the only way in from other projects.** Agents outside the vault capture; only vault sessions, with the schema and path rules loaded, edit the wiki.
 - **Owner-only operations stay owner-only**: attaching or changing the remote, moving the vault, uninstalling. The guard blocks agents from them (and from raw `git push`/`git remote` in the vault), and their CLI commands live outside what skills call.
 - **Standard library only** Python, 3.9 or newer, on macOS and Linux.
 - **Tools write only inside the vault**, except `integrate.py` (agent config), setup, move and uninstall (`~/.config/memex/`, the framework's `.git/hooks` and `.git/info/exclude`, shell profiles' `# Memex` PATH line). **Only `memex push` pushes**, and only to the attached remote.

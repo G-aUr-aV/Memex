@@ -18,6 +18,9 @@ vault pass, and with no vault configured every call passes.
              changed inside the vault; .memex/vault.json and .memex/state.json belong to the owner and the tools
   container  the vault, or a folder holding it (such as the framework clone), is never deleted or moved;
              where the vault sits inside that folder, `git clean -ff/-x/-X` and `git stash --all` are blocked
+  outside    an agent whose session runs outside the vault (in another project) changes the vault only
+             through the inbox, with `memex capture` (`--action update|supersede|delete` to change a page):
+             its file tools, shell writes, `memex rm|file` and `obsidian` writes into the vault are blocked
   owner-only attaching or changing the vault's remote, moving the vault and uninstalling Memex
              (`memex remote set|remove`, `memex move`, `memex uninstall`, `setup.sh --remote|--uninstall|
              --remove-agents`) are the owner's to run; agents hand over the command. In the vault, raw
@@ -65,6 +68,8 @@ CONTENT = IMMUTABLE | {"wiki", "inbox", "outputs"}  # deletions here go through 
 OWNER_ONLY = {".memex/vault.json", ".memex/state.json", ".memex/sessions.jsonl", ".memex/backup.json",
               ".memex/remote.json"}
 PYTHONS = {"python", "python3"}
+OBSIDIAN_WRITES = re.compile(r"delete|move|rename|create|write|append|prepend|set|remove|toggle|eval|plugin", re.I)
+OUTSIDE_SESSION = False  # set by evaluate(): the agent's session runs outside the vault
 DELETE_VERBS = {"rm", "rmdir", "unlink", "shred", "trash", "srm"}
 WRITE_VERBS = {"truncate", "tee"}
 COPY_VERBS = {"cp", "install", "rsync", "ln"}
@@ -118,6 +123,22 @@ def is_managed(r):
     files, dirs = managed()
     fr = fold(r)
     return fr in files or any(fr.startswith(d) for d in dirs)
+
+
+def check_outside(r):
+    """From a session outside the vault, knowledge goes in only through the inbox (memex capture)."""
+    if OUTSIDE_SESSION and r != ".":
+        raise Deny(f"{r}: agents working outside the vault don't write, move or delete vault files. Queue it "
+                   "instead: memex capture --title \"…\" --domain … for new knowledge, plus --action "
+                   "update|supersede|delete --target \"<Page>\" to change a page. A session in the vault applies "
+                   "it under the vault's rules.")
+
+
+def outside_target(tok, cwd):
+    if OUTSIDE_SESSION and tok and not tok.startswith("-"):
+        w = where(tok, cwd)
+        if w:
+            check_outside(w[0])
 
 
 def check_owned(r):
@@ -367,6 +388,8 @@ def check_owner_only(verb, args):
     words = [a for a in args if not a.startswith("-")]
     cmd = " ".join(["memex"] + [q(a) for a in args])
     if verb in ("memex", "memex.py"):
+        if words[:1] in (["rm"], ["file"]):
+            check_outside(f"memex {words[0]}")
         if words[:1] == ["remote"] and words[1:2] and words[1] in ("set", "add", "remove", "rm"):
             owner_only("Attaching or changing the vault's git remote", cmd)
         if words[:1] in (["move"], ["uninstall"]):
@@ -438,6 +461,7 @@ def check_shell(cmd, cwd, depth=0):
         # redirections: > file, >> file, &> file
         for i, t in enumerate(seg):
             if set(t) <= set("<>&") and ">" in t and i + 1 < len(seg):
+                outside_target(seg[i + 1], cwd)
                 w = protected(seg[i + 1], cwd, IMMUTABLE, owned=True)
                 if w and w[0] != ".":
                     deny_overwrite(w)
@@ -459,6 +483,16 @@ def check_shell(cmd, cwd, depth=0):
                     break
             continue
         paths = [a for a in args if not a.startswith("-")]
+        if verb in DELETE_VERBS | WRITE_VERBS | {"mv"}:
+            for a in paths:
+                outside_target(a, cwd)
+        elif verb in COPY_VERBS and paths:
+            outside_target(paths[-1], cwd)
+        elif verb in ("sed", "gsed", "perl") and any(a.startswith("-i") or a == "--in-place" for a in args):
+            for a in paths:
+                outside_target(a, cwd)
+        elif verb == "obsidian" and OUTSIDE_SESSION and args and OBSIDIAN_WRITES.search(args[0]):
+            check_outside(f"obsidian {args[0]}")
         if verb in DELETE_VERBS:
             for a in paths:
                 w = protected(a, cwd, CONTENT, whole=True, owned=True)
@@ -529,9 +563,11 @@ def find_named(name):
 
 
 def evaluate(d):
+    global OUTSIDE_SESSION
     if not ROOT:
         return
     cwd = d.get("cwd") or os.getcwd()
+    OUTSIDE_SESSION = where(cwd, cwd) is None
     for kind, target, data in operations(d):
         if kind == "shell":
             check_shell(data or "", cwd)
@@ -541,6 +577,7 @@ def evaluate(d):
             continue
         r, top = w
         path = os.path.join(ROOT, r)
+        check_outside(r)
         if kind == "write":
             check_owned(r)
             check_write(r, top, path, data)

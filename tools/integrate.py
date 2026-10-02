@@ -9,8 +9,9 @@ project without permission prompts. Run by setup.sh; safe to re-run.
 What it adds (and records in ~/.config/memex/integration.json so re-runs and --remove are clean):
   all      ~/.local/bin/memex, a shim for the framework's tools/memex.py
   claude   ~/.claude/skills/memex · a Memex block in ~/.claude/CLAUDE.md · ~/.claude/settings.json:
-           allow `memex`, reads of the vault and edits of wiki/ inbox/ outputs/, the guard hook, and the
-           session hooks (repo-aware recall at SessionStart, the /harvest ledger at SessionEnd)
+           allow `memex` and reads of the vault (no file edits: from other projects the inbox, through
+           `memex capture`, is the only way in), the guard hook, and the session hooks (repo-aware recall
+           at SessionStart, the /harvest ledger at SessionEnd)
   codex    ~/.agents/skills/memex · a Memex block in ~/.codex/AGENTS.md · ~/.codex/rules/memex.rules
            (allow `memex`) · the guard and session hooks in ~/.codex/hooks.json · ~/.codex/config.toml: trust the
            vault and add it to sandbox_workspace_write.writable_roots
@@ -195,8 +196,7 @@ def claude(state, remove=False):
     s["hooks"] = s.get("hooks", {})
     added = {}
     if not remove:
-        mine = ["Bash(memex *)", "Bash(memex)", f"Read(/{V}/**)",
-                f"Edit(/{V}/wiki/**)", f"Edit(/{V}/inbox/**)", f"Edit(/{V}/outputs/**)"]
+        mine = ["Bash(memex *)", "Bash(memex)", f"Read(/{V}/**)"]  # writes go through memex capture
         new = [e for e in mine if e not in allow]
         allow += new
         added = {"allow": new}

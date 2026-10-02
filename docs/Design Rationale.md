@@ -39,6 +39,7 @@ There are three layers: **immutable raw sources** → an **LLM-owned wiki** → 
 | Capture and recall run on session hooks; a batch `/harvest` compiles recorded sessions | knowledge lost whenever an agent forgets to capture; relevant pages never surfaced | hook-driven capture is what makes agent memory reliable (claude-mem); consolidation belongs between sessions (Letta's sleep-time agents). Session-level digests keep the cited, curated model, where per-tool-call logging would flood it |
 | Read whole pages by default; outline → section only for pages over ~150 lines (search shows each page's length) | whole-page reads burning context on long pages, and extra tool calls on short ones | layered retrieval cut tokens roughly 10× in claude-mem, at a scale where pages are long; with pages capped near 200 lines, one read usually beats three calls. BM25 over titles, aliases and summaries is enough at personal scale |
 | One agent-neutral CLI (`memex`) for reads and writes from other projects | a separate integration per agent; writes that skip the rules | `AGENTS.md` and `SKILL.md` are shared by Claude Code, Codex and Hermes, and one CLI needs only one permission rule per agent |
+| From other projects, agents write only to the inbox (`memex capture`, including queued updates and deletions); the guard refuses direct vault edits there | edits made without the vault's schema, path rules or citations; clashes with a vault session editing the same page | an agent busy in a code repo has that repo in context, not the vault's rules. One way in keeps every wiki change under the full rules, at the cost of corrections landing at the next inbox run (at least daily via `/close`) |
 | Add qmd search only past ~150 pages per section or when search misses | premature machinery | Karpathy ran about 100 sources on index files alone; measure before adding tools |
 
 ## Trade-offs to know
@@ -46,7 +47,7 @@ There are three layers: **immutable raw sources** → an **LLM-owned wiki** → 
 - **Scale**: the index alone works up to roughly 100–300 pages. Past that, use section indexes (already generated) and real search ([qmd](https://github.com/tobi/qmd), via `tools/setup-qmd.sh`).
 - **Supervision vs friction**: `/ingest` is deep and discussed; `/inbox` is fast and batched. Use deep for anything that matters.
 - **Autonomy vs oversight**: agents no longer ask before writing, so review happens afterwards (the Review queue, `git log`). The guard and pre-commit hook keep the irreversible cases out, and `git revert` undoes the rest.
-- **Your own thinking**: the agent writes the wiki, but understanding comes from your `> [!mine]` takes and `notes/`. Keep writing a little yourself.
+- **Your own thinking**: the agent writes the wiki, but understanding comes from your `> [!mine]` takes and `notes/`. `/ingest` drafts the take so a plain **ok** is enough, but correcting it in your own words, even one line, is what makes it stick. Keep writing a little yourself.
 
 ## Sources
 - Karpathy, *LLM Wiki* (idea file, 2026-04-04): https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
