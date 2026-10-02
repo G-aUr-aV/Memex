@@ -49,6 +49,7 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 - **Guard:** agents can't attach or change the remote, move the vault, uninstall, or run raw `git push`/`git remote` changes in the vault. Allow and deny tests cover each case.
 
 ### Changed
+- **`/ingest` no longer interviews you.** It sends one message with the takeaways, a drafted take (why it's here, surprising, doubtful; or what to emphasize, for engineering) and the page plan, then waits for **ok** or your changes. An approved draft is stored in `> [!mine]`, headed `(agent's draft, approved YYYY-MM-DD)`. Your own words replace it wherever you give any.
 - **Other projects write only through the inbox.** Agents outside the vault capture (`memex capture`, with `--action update|supersede|delete` for existing pages) and never edit vault files. The "small direct fix" instruction and the global `Edit` permissions for the vault are gone. The guard refuses file-tool and shell writes, `memex rm`/`memex file` and `obsidian` writes into the vault from sessions outside it.
 - **Reading:** read whole pages by default. Search results show each page's length, and outline → section is only for pages over 150 lines.
 - **`memex harvest`:** a transcript in a format the parser doesn't recognize is listed as UNPARSED and never skipped as trivial.

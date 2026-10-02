@@ -47,7 +47,7 @@ There are three layers: **immutable raw sources** → an **LLM-owned wiki** → 
 - **Scale**: the index alone works up to roughly 100–300 pages. Past that, use section indexes (already generated) and real search ([qmd](https://github.com/tobi/qmd), via `tools/setup-qmd.sh`).
 - **Supervision vs friction**: `/ingest` is deep and discussed; `/inbox` is fast and batched. Use deep for anything that matters.
 - **Autonomy vs oversight**: agents no longer ask before writing, so review happens afterwards (the Review queue, `git log`). The guard and pre-commit hook keep the irreversible cases out, and `git revert` undoes the rest.
-- **Your own thinking**: the agent writes the wiki, but understanding comes from your `> [!mine]` takes and `notes/`. Keep writing a little yourself.
+- **Your own thinking**: the agent writes the wiki, but understanding comes from your `> [!mine]` takes and `notes/`. `/ingest` drafts the take so a plain **ok** is enough, but correcting it in your own words, even one line, is what makes it stick. Keep writing a little yourself.
 
 ## Sources
 - Karpathy, *LLM Wiki* (idea file, 2026-04-04): https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f

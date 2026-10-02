@@ -143,11 +143,11 @@ Today's daily note: not created yet (suggest /today)
 /ingest inbox/2026-09-30 LLM Wiki.md
 ```
 
-The agent reads it, gives 3–5 takeaways, and asks three questions: why you saved it, what surprised you, and what you doubt. It then files everything and commits. A typical result (yours will differ):
+The agent reads it and sends one message: 3–5 takeaways, a drafted take (why it's useful to you, what's surprising, what's doubtful, guessed from your current focus and projects), and the pages it plans to write. Reply **ok**, or say what to change. It then files everything and commits. A typical result (yours will differ):
 
 ```text
 raw/learning/YYYY-MM-DD LLM Wiki.md                 the clip, filed (named by the gist's date), never edited again
-wiki/learning/sources/LLM Wiki.md                   claims with citations, quotes, your answers in > [!mine]
+wiki/learning/sources/LLM Wiki.md                   claims with citations, quotes, your approved take in > [!mine]
 wiki/learning/concepts/LLM Wiki Pattern.md          new concept page, every line cited
 wiki/learning/entities/Andrej Karpathy.md
 wiki/learning/concepts/Memex (Vannevar Bush).md

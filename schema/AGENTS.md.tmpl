@@ -51,7 +51,7 @@ Templates for every type: `meta/templates/wiki/`. Read the matching template bef
 4. **Supersede, never delete.** `~~old claim~~ superseded YYYY-MM-DD by ([[source|src]])` plus a Timeline line; a replaced page gets `status: superseded` + `superseded_by:`. Order by source date, never by dates you infer.
 5. **Conflicts are flagged, not resolved.** Add `> [!conflict]` quoting both sides with citations, note it in the log entry, and let the owner decide.
 6. **Volatile facts** (status, owner, version, price, count) carry `(as of YYYY-MM-DD)`. Don't copy live values a connector can fetch (issue status, PR state); link the key instead.
-7. **`> [!mine]` blocks are the owner's words.** Preserve them verbatim. Create one only to record the owner's own words verbatim (ingest answers, dictated takes). An empty block says `(none yet)`; never invent a take.
+7. **`> [!mine]` blocks are the owner's words.** Preserve them verbatim. Create one only for the owner's own words (ingest replies, dictated takes) or a drafted take the owner explicitly approved, headed `(agent's draft, approved YYYY-MM-DD)`. An empty block says `(none yet)`; never invent a take.
 8. **Corrections stick.** When the owner corrects a fact, apply it and add `> [!mine] Correction (YYYY-MM-DD): …` so later ingests can't revert it.
 9. **Surgical edits.** Use targeted Edit calls on existing pages; never rewrite a whole existing page.
 

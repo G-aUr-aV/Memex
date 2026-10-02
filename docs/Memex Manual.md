@@ -46,7 +46,7 @@ Every factual line in the wiki cites the raw source it came from, so you can alw
     - Only you can attach or change the remote; agents are blocked from it.
 - [ ] **Do your first ingest: Karpathy's LLM Wiki gist.** It's the idea this vault is built on, so it makes a good first source and shows the whole loop.
   1. Open https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f and clip it with the Web Clipper (it lands in `inbox/`).
-  2. In your agent, run `/ingest` on that file. Answer the three questions (why you saved it, what surprised you, what you doubt).
+  2. In your agent, run `/ingest` on that file. It proposes takeaways, a drafted take (why you saved it, what's surprising, what's doubtful) and a page plan. Reply **ok**, or say what to change.
   3. Watch Obsidian: you get a source page, pages such as *LLM Wiki Pattern*, *Andrej Karpathy* and *Memex (Vannevar Bush)*, index and log entries, and a git commit.
   4. Try `/ask how should I run ingest and lint?`, then `/save` the answer.
 - [ ] *Optional installs, when you want them:* `npm i -g defuddle` (lets `/ingest <url>` fetch pages itself) · `brew install yt-dlp` (YouTube transcripts) · qmd for search at scale (see §9).
@@ -86,7 +86,7 @@ Already configured for you: links auto-update when files move, attachments go to
 
 | Command | Use it for | Example |
 |---|---|---|
-| `/ingest` | one important source, discussed with you (asks what surprised you and what you doubt) | `/ingest inbox/2026-09-26 Some Paper.md` |
+| `/ingest` | one important source: the agent proposes takeaways, a drafted take and a page plan; you reply ok or adjust | `/ingest inbox/2026-09-26 Some Paper.md` |
 | `/harvest` | turning your recorded agent sessions in other repos into cited knowledge (`/close` runs it first) | `/harvest` |
 | `/inbox` | batch-processing quick captures and queued updates or deletions, without stopping to ask; one change summary at the end | `/inbox` |
 | `/ask` | any question; cited, states gaps, and files reusable answers as pages | `/ask what did we decide about retry handling and why?` |
@@ -127,7 +127,7 @@ From any other project, agents read Memex and add to its inbox with `memex captu
 - **Redaction**: if a source contains a password, token, personal ID or other personal data, the agent redacts it in the inbox copy *before* filing and lists what it redacted. Raw sources are never edited after filing. The lint and a git pre-commit hook also scan for leaked secrets.
 
 ### Learning & research → `learning/`
-- **Articles & papers**: clip → `/ingest`, then answer three quick questions (why you saved it, what surprised you, what you doubt). You get a source page, updated concept and tool pages, and topic theses. Tag a line `#remember` to get draft flashcards. Ask: *"Compare X and Y in a table."* · *"What changed my mind about Z?"*
+- **Articles & papers**: clip → `/ingest`, then approve the drafted take (why you saved it, what's surprising, what's doubtful) or correct it in a line. You get a source page, updated concept and tool pages, and topic theses. Tag a line `#remember` to get draft flashcards. Ask: *"Compare X and Y in a table."* · *"What changed my mind about Z?"*
 - **Deep-dives**: say "start a topic on <question>". A topic page keeps a **current thesis**, evidence for and against, and a reading path. Ingest 1–3 sources a week; `/lint` suggests gaps and sources to find.
 - **Books & courses**: one raw file per chapter or module, with a hub page in `topics/`. *"Quiz me on chapters 1–3."*
 - **Videos & podcasts**: drop the transcript in `inbox/`. Answers cite timestamps.
