@@ -21,6 +21,7 @@ Follow CLAUDE.md, the path-scoped rules for the source's domain, and the page te
 
 ## 2. Triage against the wiki
 - Read `wiki/hot.md`, `wiki/index.md` and the section index. Search for the source's main entities and concepts and their synonyms: `memex search <terms>` (titles and aliases rank highest), plus `obsidian aliases verbose` if Obsidian is running. Use `memex related "<Page>"` to see what a candidate page already connects to.
+- **Material value is the admission test:** compile knowledge the owner will revisit. State which project, goal, question or reusable procedure it serves (`why:`), and what it adds or corrects compared with existing pages. An explicit capture reason can establish relevance even outside the current focus. Durable decisions, root causes, gotchas and working procedures qualify; duplicates, unsupported claims, generic filler and live ticket/PR state without a durable lesson do not. Apply the one-entity rule separately when deciding what deserves its own page.
 - State a **disposition**: `New` (new knowledge) · `Update` (extends existing pages) · `Disputed` (contradicts existing claims) · `No material` (nothing worth compiling). On `No material`, file the raw source, log `## [date] ingest | no material: <title>`, commit and stop.
 
 ## 3. Propose, then get one OK (skip if --quick, or if you started this ingest yourself rather than the owner)

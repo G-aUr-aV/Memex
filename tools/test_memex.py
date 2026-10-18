@@ -179,6 +179,70 @@ class TestVaultLayout(Sandbox):
 
 
 class TestGitSafety(Sandbox):
+    def test_scoped_commit_preserves_unrelated_edits_and_staging(self):
+        graph = self.V / ".obsidian/graph.json"
+        original = graph.read_text()
+        capture = self.V / "inbox/Scoped Capture.md"
+        staged = self.V / "inbox/Unrelated Staged.md"
+        try:
+            graph.write_text(original + "\n")
+            staged.write_text("Unrelated owner's work\n")
+            self.git("add", "inbox/Unrelated Staged.md")
+            capture.write_text("Durable capture\n")
+            r = self.memex("commit", "inbox: scoped", "--only", "inbox/Scoped Capture.md")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            changed = self.git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").stdout.splitlines()
+            self.assertEqual(changed, ["inbox/Scoped Capture.md"])
+            self.assertIn("inbox/Unrelated Staged.md", self.git("diff", "--cached", "--name-only").stdout)
+            self.assertIn(".obsidian/graph.json", self.git("diff", "--name-only").stdout)
+            before = self.git("rev-parse", "HEAD").stdout
+            r = self.memex("commit", "inbox: scoped no-op", "--only", "inbox/Scoped Capture.md")
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("nothing to commit", r.stdout)
+            self.assertEqual(before, self.git("rev-parse", "HEAD").stdout)
+        finally:
+            graph.write_text(original)
+            self.git("reset", "-q", "--", "inbox/Unrelated Staged.md")
+            staged.unlink(missing_ok=True)
+
+    def test_scoped_commit_includes_indexes_and_tracked_inbox_removal(self):
+        self.memex("capture", "--title", "Scoped Filed", "--domain", "learning", stdin="A reusable fact\n")
+        found = next((self.V / "inbox").glob("* Scoped Filed.md"))
+        r = self.memex("commit", "inbox: capture", "--only", found.relative_to(self.V).as_posix())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        old = found.relative_to(self.V).as_posix()
+        r = self.memex("file", old, "--domain", "learning", "--name", "2026-10-03 Scoped Filed.md")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        page = "wiki/learning/concepts/Scoped Fact.md"
+        (self.V / page).write_text(
+            "---\ntype: concept\ndomain: learning\nstatus: active\nsummary: A scoped reusable fact.\n"
+            "created: 2026-10-03\nupdated: 2026-10-03\nreviewed:\n---\n"
+            "> [!summary]\n> A reusable fact.\n\n> [!mine] My take\n> (none yet)\n\n"
+            "## Content\n- A reusable fact ([[2026-10-03 Scoped Filed|src]]).\n\n"
+            "## Sources\n- [[2026-10-03 Scoped Filed]]\n\n---\n## Timeline\n"
+            "- 2026-10-03 | [[2026-10-03 Scoped Filed]] | Created.\n")
+        r = self.memex("commit", "inbox: filed", "--only", old, "raw/learning/2026-10-03 Scoped Filed.md", page)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn(old, self.git("ls-files").stdout.splitlines())
+        self.assertIn("raw/learning/2026-10-03 Scoped Filed.md", self.git("ls-files").stdout.splitlines())
+        changed = self.git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").stdout.splitlines()
+        self.assertIn("wiki/index.md", changed)
+        self.assertIn("wiki/learning/Learning Index.md", changed)
+        self.assertIn("[[Scoped Fact]]", (self.V / "wiki/learning/Learning Index.md").read_text())
+
+    def test_scoped_commit_rejects_broad_paths_and_escaping_symlink(self):
+        link = self.V / "inbox/escape.md"
+        outside = self.tmp / "outside.md"
+        outside.write_text("outside\n")
+        link.symlink_to(outside)
+        try:
+            for name in (".", "wiki", "../outside.md", str(outside), "inbox/escape.md"):
+                r = self.memex("commit", "inbox: refused", "--only", name)
+                self.assertNotEqual(r.returncode, 0, name)
+                self.assertIn("individual files inside the vault", r.stderr)
+        finally:
+            link.unlink()
+
     def test_local_config(self):
         get = lambda k: self.git("config", "--local", "--get", k).stdout.strip()  # noqa: E731
         self.assertEqual((get("user.name"), get("user.email")), ("Memex Agent", "memex-agent@localhost"))
@@ -1034,12 +1098,38 @@ class TestIntegration(Sandbox):
         hooks = json.loads((self.home / ".claude/settings.json").read_text())["hooks"]
         self.assertIn("hook session-start", hooks["SessionStart"][0]["hooks"][0]["command"])
         self.assertIn("hook session-end --agent claude", hooks["SessionEnd"][0]["hooks"][0]["command"])
+        self.assertEqual(hooks["SessionEnd"][0]["hooks"][0]["timeout"], 10)
         codex_hooks = json.loads((self.home / ".codex/hooks.json").read_text())["hooks"]
         self.assertIn("hook session-end --agent codex", codex_hooks["SessionEnd"][0]["hooks"][0]["command"])
+        self.assertEqual(codex_hooks["SessionEnd"][0]["hooks"][0]["timeout"], 3)
+        self.assertEqual(codex_hooks["SessionStart"][0]["hooks"][0]["timeout"], 10)
+        self.assertEqual(codex_hooks["PreToolUse"][0]["hooks"][0]["timeout"], 15)
+        # Refresh an existing installation with the old SessionEnd timeout.
+        codex_hooks["SessionEnd"][0]["hooks"][0]["timeout"] = 10
+        (self.home / ".codex/hooks.json").write_text(json.dumps({"hooks": codex_hooks}))
         # re-running setup doesn't duplicate hooks
-        run(["bash", self.fw / "setup.sh", "--vault", self.V, "--agents", "all"], self.tmp, self.env)
+        r = run(["bash", self.fw / "setup.sh", "--vault", self.V, "--agents", "all"], self.tmp, self.env)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         hooks = json.loads((self.home / ".claude/settings.json").read_text())["hooks"]
         self.assertEqual([len(hooks[e]) for e in ("PreToolUse", "SessionStart", "SessionEnd")], [1, 1, 1])
+        self.assertEqual(hooks["SessionEnd"][0]["hooks"][0]["timeout"], 10)
+        codex_hooks = json.loads((self.home / ".codex/hooks.json").read_text())["hooks"]
+        self.assertEqual([len(codex_hooks[e]) for e in ("PreToolUse", "SessionStart", "SessionEnd")], [1, 1, 1])
+        self.assertEqual(codex_hooks["SessionEnd"][0]["hooks"][0]["timeout"], 3)
+
+    def test_codex_session_end_within_timeout(self):
+        payload = {"session_id": "codex-timeout-test", "cwd": str(self.fw),
+                   "hook_event_name": "SessionEnd", "reason": "other"}
+        r = subprocess.run([PY, self.fw / "tools/memex.py", "hook", "session-end", "--agent", "codex"],
+                           cwd=self.fw, env=self.env, input=json.dumps(payload), capture_output=True, text=True,
+                           timeout=3)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertEqual(r.stderr, "")
+        ledger = [json.loads(line) for line in (self.V / ".memex/sessions.jsonl").read_text().splitlines()]
+        recorded = [rec for rec in ledger if rec.get("session_id") == payload["session_id"]]
+        self.assertEqual(len(recorded), 1)
+        self.assertEqual(recorded[0]["agent"], "codex")
 
     def test_z_remove(self):
         r = run(["bash", self.fw / "setup.sh", "--remove-agents"], self.tmp, self.env)
