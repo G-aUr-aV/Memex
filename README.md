@@ -297,6 +297,8 @@ Run `memex sync` (or start a session) and the folders, index, rules and schema f
 
 In Codex, skills start with `$` (`$ingest`, `$ask`).
 
+For unattended inbox processing, schedule a local Codex job in **the vault project**, with prompt: **Follow `.claude/skills/auto-inbox/SKILL.md`. Review the inbox and ingest eligible entries.** For example, run it every six hours while the computer and app are running. Test with `$auto-inbox --review-only` first. The admission test is material value: source-supported knowledge the owner will revisit, with a clear purpose and an addition or correction to the wiki. Deferred and no-material entries stay in the inbox; reviewed conflicts and plans exceeding 15 content pages need owner review. The job never deletes entries, invents personal takes or marks pages reviewed. It uses `memex commit --only` for the batch's files and generated indexes, preserving unrelated edits, and defers when existing wiki/raw work or an overlapping writer makes ingestion unsafe.
+
 ## The `memex` CLI
 
 Works the same in every agent, in any folder, and in your shell.
@@ -311,7 +313,7 @@ Works the same in every agent, in any folder, and in your shell.
 | `memex rm <path>` | move a wiki/inbox/outputs file to `.trash/` after a backlink check |
 | `memex harvest [--digest ID \| --done ID]` | the recorded sessions waiting for `/harvest`; `--digest` writes one into `inbox/` |
 | `memex backup [--to DIR]` | a verified git bundle of the vault (restore: `git clone <bundle>`) |
-| `memex commit "<op>: <title>"` | rebuild indexes, lint, commit as the vault identity; then push, if you attached a private remote |
+| `memex commit "<op>: <title>" [--only FILE ...]` | rebuild indexes, lint, commit as the vault identity; optionally limit to named files and generated indexes, preserving unrelated edits; then push, if you attached a private remote |
 | `memex pull [--merge]` · `memex push` · `memex remote` | sync by hand (sessions and commits already do it) · status of the remote |
 | `memex context` | what a session starts with; re-renders the vault if the framework changed |
 | `memex sync [--check]` | re-render the framework's files into the vault |
@@ -328,6 +330,8 @@ What setup adds for each agent:
 | Claude Code | the `memex` skill; a Memex block in `~/.claude/CLAUDE.md`; in `~/.claude/settings.json`, pre-approval for `memex` and vault reads (no direct edits: other projects write through `memex capture`), the guard hook, and the SessionStart/SessionEnd hooks |
 | Codex | the `memex` skill in `~/.agents/skills`; a block in `~/.codex/AGENTS.md`; the vault marked trusted and writable in `~/.codex/config.toml`; `memex` allowed in `~/.codex/rules/`; the guard and session hooks in `~/.codex/hooks.json` |
 | Hermes | the `memex` skill; guard and session-context hooks in `~/.hermes/config.yaml` (with repo recall on the first turn); `hermes skills trust` for the vault's own skills. There's no session ledger for Hermes yet |
+
+Codex's global `SessionEnd` hook uses its supported maximum timeout of 3 seconds. It records the session locally; `/harvest` processes the transcript later.
 
 ## Guardrails
 

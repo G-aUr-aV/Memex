@@ -6,6 +6,9 @@ type: doc
 Notable changes to the Memex framework. The format follows [Keep a Changelog](https://keepachangelog.com/). Dates are ISO.
 
 ## Unreleased: 0.3.0, framework and vault split
+### Fixed
+- Codex's global `SessionEnd` hook now requests its supported 3-second timeout instead of 10 seconds, removing the timeout-clamping warning. Setup refreshes existing installations with the corrected value; other hook timeouts are unchanged.
+
 ### Changed (breaking layout)
 - **The framework no longer is the vault.** This repo holds code only (`schema/ skills/ agents/ config/ hooks/ tools/ templates/ seed/ docs/`). `setup.sh` (now at the root) creates the vault in a separate folder, asking where. The default is `MemexVault` in the folder you run it from; a vault inside the framework folder is git-ignored there.
 - **Managed files are rendered, not copied by hand.** `memex sync` renders the schema (`AGENTS.md` + `CLAUDE.md`), skills, subagents, path rules, Claude Code and Codex settings, templates and docs into the vault. They're excluded from the vault's git, the guard blocks edits to them, and each session re-syncs when the framework changed. Hand edits are backed up to `.memex/backup/`.
@@ -14,6 +17,8 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 - Skills call `memex ctx`, `memex lint` and `memex commit` instead of tool paths.
 
 ### Added
+- `/auto-inbox`: scheduled material-value review and serial quick ingestion, with a read-only review mode, preserved deferred/no-material entries, no deletions and checks for overlapping wiki work. `/ingest` now states the shared admission test explicitly: compile source-supported knowledge the owner will revisit, with a clear purpose and a material addition or correction.
+- `memex commit --only <files...>` commits a batch's named vault files and generated indexes while preserving unrelated staged and unstaged edits. Default commits are unchanged; scoped commits retain identity, lint and hooks, and refuse directories, paths escaping the vault and partial merge resolutions.
 - **Vault git (local-only by default)**: repo-local `Memex Agent <memex-agent@localhost>` identity (also `author.*`/`committer.*`), no commit signing, local `core.hooksPath`, a pre-commit hook that also refuses other identities, and a pre-push hook that refuses everything. `memex commit` forces the identity through the environment (beating global and `includeIf` config), refuses to run with a remote or without its own repo, and adds a `Memex-Framework: <version> (<sha>)` trailer.
 - The framework's own pre-commit hook and a CI check refuse knowledge folders, vault config and embedded repos.
 - `memex init`, `memex sync [--check]`, `memex doctor [--fix]`, `memex ctx`, `memex index`, `memex lint`.
