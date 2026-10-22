@@ -113,6 +113,8 @@ Each layer catches what the one above can miss. Prose alone is advice.
 
 From other projects, agents read the vault and write only through `memex capture`, which drops a file into `inbox/`. The guard decides "outside" from the session's `cwd`, not from a `cd` inside a shell command. Outside the vault it refuses file-tool writes, shell writes, `memex rm`/`memex file` and `obsidian` writes into the vault. Only sessions in the vault compile, edit and delete.
 
+Scheduled admission and ingestion uses `skills/auto-inbox/SKILL.md` in a local vault session. It reuses ingest's material-value test and inbox's quick-mode limits, preserves deferred and no-material entries, and supports read-only review. The agent scheduler owns the cadence; the framework installs no timer. `memex commit --only <files...>` includes only named files and generated indexes, preserving unrelated staged and unstaged changes; its default still commits the entire vault. Scoped commits refuse directories, paths escaping the vault and partial merge resolutions, use literal Git pathspecs, and retain identity, lint and hook checks. Unattended ingestion also defers when pre-existing wiki/raw work or an overlapping writer would contaminate the batch.
+
 The vault's guard hook command is byte-identical to the global one (`memexlib.guard_command()`), so Claude Code runs it once. Hook commands use absolute framework paths. Permission rules use the `memex` shim, because paths with spaces don't match reliably in Bash rules.
 
 ## Invariants: keep these true
@@ -124,7 +126,7 @@ The vault's guard hook command is byte-identical to the global one (`memexlib.gu
 - **Tools write only inside the vault**, except `integrate.py` (agent config), setup, move and uninstall (`~/.config/memex/`, the framework's `.git/hooks` and `.git/info/exclude`, shell profiles' `# Memex` PATH line). **Only `memex push` pushes**, and only to the attached remote.
 - **Sync never leaves the vault half-merged on its own.** A conflicting pull is rolled back; only `memex pull --merge` (asked for) leaves markers, and the pre-commit hook refuses them.
 - **Rendering is deterministic** (same inputs, same bytes), and so are the generated indexes.
-- **Hooks stay quiet and fast.** Session hooks never fail a session: they print nothing when there's nothing useful to say, and the SessionEnd hook does no model call and no network I/O (Claude Code gives it 1.5 s).
+- **Hooks stay quiet and fast.** Session hooks never fail a session: they print nothing when there's nothing useful to say, and the SessionEnd hook does no model call and no network I/O (Claude Code gives it 1.5 s). Integration configures Codex's SessionEnd timeout at its supported maximum of 3 s; SessionStart stays at 10 s.
 - **Harvest extracts; it never summarizes into `raw/`.** Digests are verbatim excerpts, so they're valid raw sources; judgment happens in the wiki pages that cite them.
 - **The guard fails open with no vault and outside the vault, and closed inside it**: an internal error blocks only calls that mention the vault. A new rule must never slow down or block unrelated work.
 - **The rendered `AGENTS.md` stays under ~200 lines.** Put detail in path rules and skills.

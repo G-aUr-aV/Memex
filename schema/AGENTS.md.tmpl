@@ -65,6 +65,7 @@ Templates for every type: `meta/templates/wiki/`. Read the matching template bef
 ## Operations (skills in `.claude/skills/`, also at `.agents/skills/` for Codex and Hermes)
 - `/ingest <file|url|pasted text>` — deep, supervised, one source at a time. Use it for anything that matters.
 - `/inbox` — quick serial processing of inbox captures, then one change summary.
+- `/auto-inbox` — scheduled admission review and quick ingest of eligible entries; preserve deferred and no-material items. `--review-only` makes no writes.
 - `/harvest` — compile the owner's agent sessions in other repos (recorded automatically at session end) into knowledge; `/close` runs it first.
 - `/ask <question>` — read-only answer with citations; offers `/save`. `/save` files an answer or thread as a synthesis page.
 - `/lint` — health check. `/today`, `/close`, `/weekly` — daily-driver routines. `/prep <person|project>` — meeting prep.

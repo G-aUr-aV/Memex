@@ -556,7 +556,7 @@ def cmd_commit(a):
     if not a.message.strip():
         fail('give a message like "ingest: <Title>"')
     try:
-        print(vaultmod.commit(V(), a.message, force=a.force))
+        print(vaultmod.commit(V(), a.message, force=a.force, only=a.only))
     except VaultError as e:
         fail(str(e))
 
@@ -902,6 +902,7 @@ def main():
     s = sub.add_parser("commit")
     s.add_argument("message")
     s.add_argument("--force", action="store_true")
+    s.add_argument("--only", nargs="+", metavar="FILE", help="commit only named vault files and generated indexes")
     s.set_defaults(fn=cmd_commit)
     s = sub.add_parser("ctx", help="live context for a skill")
     s.add_argument("skill")

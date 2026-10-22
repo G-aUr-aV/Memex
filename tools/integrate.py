@@ -149,7 +149,9 @@ def merge_hooks(hooks, prev_cmds, matcher, agent, remove=False):
     Returns the commands installed, for the state file."""
     wanted = {"PreToolUse": {"matcher": matcher, "hooks": [{"type": "command", "command": GUARD, "timeout": 15}]}}
     for event, cmd in session_hooks(agent).items():
-        wanted[event] = {"hooks": [{"type": "command", "command": cmd, "timeout": 10}]}
+        # Codex caps SessionEnd at three seconds; other events keep their budget.
+        timeout = 3 if agent == "codex" and event == "SessionEnd" else 10
+        wanted[event] = {"hooks": [{"type": "command", "command": cmd, "timeout": timeout}]}
     ours = set(prev_cmds) | {GUARD} | set(session_hooks(agent).values())
     for event in wanted:
         entries = drop_hooks(hooks.get(event), ours)
