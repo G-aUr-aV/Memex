@@ -24,6 +24,10 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 - Guard: protects managed files and `.memex/vault.json`, refuses deleting or moving a folder that holds the vault, and blocks `git clean -ff/-x/-X` and `git stash --all` there.
 - MIT license.
 
+### Added: unattended inbox
+- **`/auto-inbox` skill** for scheduled runs: reviews every inbox capture for material value (`auto` · `review` · `no-material`), quick-ingests up to 10 clear keepers serially without asking, and leaves the rest in `inbox/` with a reason. It never deletes, switches to review-only when `wiki/` or `raw/` already has uncommitted changes, and starts its report with a one-line headline a scheduler can show. In Claude Code it runs on Claude Sonnet 5.5 at medium effort (`model:` and `effort:` frontmatter), whatever the session's model; other agents ignore those fields.
+- `memex ctx auto-inbox`: the whole inbox (no 20-item cap) plus the vault's uncommitted changes outside `inbox/`.
+
 ### Added: automatic memory (Phase 1)
 - **Repo-aware recall:** a global SessionStart hook (`memex hook session-start`, Claude Code and Codex; Hermes on its first turn) prints what the wiki knows about the current repo: pages whose `repo:` matches, their open loops and linked decisions. It prints nothing when nothing matches.
 - **Session ledger + `/harvest`:** a global SessionEnd hook records each session outside the vault in `.memex/sessions.jsonl`. `memex harvest` turns Claude Code and Codex transcripts (including Codex's JavaScript tool mode) into verbatim, redacted digests; the `/harvest` skill files them and compiles durable knowledge; `/close` runs it first. The `harvest` settings are `enabled`, `exclude` and `min_tool_calls`.

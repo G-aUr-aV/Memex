@@ -543,6 +543,23 @@ class TestCLI(Sandbox):
         self.assertIn("## wiki/hot.md", out)
         self.assertNotIn("WARNING", out)
 
+    def test_ctx_auto_inbox_lists_everything_and_pending_changes(self):
+        made = [self.V / f"inbox/2026-10-01 Item {i:02d}.md" for i in range(25)]
+        for p in made:
+            p.write_text("x\n")
+        page = self.V / "wiki/learning/concepts/Half Done.md"
+        page.write_text("---\ntype: concept\n---\nx\n")
+        try:
+            out = self.memex("ctx", "auto-inbox").stdout
+            self.assertIn("2026-10-01 Item 24.md", out)
+            self.assertNotIn("more", out)
+            self.assertIn("Uncommitted changes outside inbox/: 1", out)
+            self.assertIn("?? wiki/learning/concepts/Half Done.md", out)
+        finally:
+            for p in made + [page]:
+                p.unlink()
+        self.assertIn("Uncommitted changes outside inbox/: none", self.memex("ctx", "auto-inbox").stdout)
+
     def test_hermes_hook(self):
         r = self.memex("hook", "hermes", stdin=json.dumps({"cwd": str(self.tmp), "extra": {"is_first_turn": True}}))
         self.assertIn("memex search", json.loads(r.stdout)["context"])

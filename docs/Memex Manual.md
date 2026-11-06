@@ -89,6 +89,7 @@ Already configured for you: links auto-update when files move, attachments go to
 | `/ingest` | one important source: the agent proposes takeaways, a drafted take and a page plan; you reply ok or adjust | `/ingest inbox/2026-09-26 Some Paper.md` |
 | `/harvest` | turning your recorded agent sessions in other repos into cited knowledge (`/close` runs it first) | `/harvest` |
 | `/inbox` | batch-processing quick captures and queued updates or deletions, without stopping to ask; one change summary at the end | `/inbox` |
+| `/auto-inbox` | scheduled, unattended inbox runs: reviews every capture for material value, quick-ingests only the clear keepers, and leaves the rest in `inbox/` with a reason (never deletes); `--review-only` to preview | `/auto-inbox 5` |
 | `/ask` | any question; cited, states gaps, and files reusable answers as pages | `/ask what did we decide about retry handling and why?` |
 | `/save` | keeping a good answer or discussion as a page | `/save` |
 | `/prep` | 1:1s, meetings, stakeholder conversations | `/prep my manager` |

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Print the live context a Memex skill needs (used by the skills' !`memex ctx …` lines).
 
-  memex ctx <ingest|inbox|harvest|lint|today|close|weekly>      (or: python3 tools/context.py …)
+  memex ctx <ingest|inbox|auto-inbox|harvest|lint|today|close|weekly>      (or: python3 tools/context.py …)
 
 One allow-listed command instead of shell pipelines, so skills never abort on a permission
 check. Always exits 0 and never writes anything.
@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from memexlib import require_vault  # noqa: E402
+from memexlib import git, require_vault  # noqa: E402
 
 ROOT = require_vault()
 TODAY = datetime.date.today()
@@ -37,6 +37,25 @@ def inbox(limit=20, ages=False):
             print(f"- {p.name}")
     if len(files) > limit:
         print(f"- … {len(files) - limit} more")
+
+
+def pending_changes(limit=30):
+    """Uncommitted changes outside inbox/: memex commit adds everything, so they would join the next commit."""
+    r = git(ROOT, "status", "--porcelain", "-z", "--untracked-files=all")
+    if r.returncode:
+        print("Uncommitted changes outside inbox/: unknown (git status failed)")
+        return
+    rows, entries = [], iter(r.stdout.split("\0"))
+    for e in entries:
+        if not e:
+            continue
+        if e[0] in "RC":
+            next(entries, None)  # a rename's or copy's original path
+        if not e[3:].startswith("inbox/"):
+            rows.append(f"- {e[:2].strip() or '?'} {e[3:]}")
+    print(f"Uncommitted changes outside inbox/: {len(rows) or 'none'}", *rows[:limit], sep="\n")
+    if len(rows) > limit:
+        print(f"- … {len(rows) - limit} more")
 
 
 def log_entries(since=None, op=None, last=None):
@@ -99,6 +118,9 @@ def main():
     print(f"Now: {NOW:%Y-%m-%d %A %H:%M} · ISO week {TODAY.isocalendar()[0]}-W{TODAY.isocalendar()[1]:02d}")
     if what in ("ingest", "inbox"):
         inbox(ages=(what == "inbox"))
+    elif what == "auto-inbox":
+        inbox(limit=1000, ages=True)
+        pending_changes()
     elif what == "lint":
         last = log_entries(op="lint", last=3)
         print("Last lints:", *(last or ["never"]), sep="\n- ")
@@ -124,7 +146,7 @@ def main():
         print("Daily notes this week:", ", ".join(notes) or "none")
         inbox(limit=5)
     else:
-        print("usage: memex ctx <ingest|inbox|harvest|lint|today|close|weekly>")
+        print("usage: memex ctx <ingest|inbox|auto-inbox|harvest|lint|today|close|weekly>")
 
 
 def run():
