@@ -175,7 +175,8 @@ FEATURE_DEFAULTS = {
     # memex backup: git bundles of the vault (the only copy lives on this disk)
     "backup": {"dir": "", "keep": 10, "warn_days": 14},
     # repo-aware recall printed at the start of agent sessions in other repos
-    "recall": {"enabled": True, "max_pages": 3},
+    # stall_hours: an inbox capture older than this means the inbox run has stopped; say so at session start
+    "recall": {"enabled": True, "max_pages": 3, "stall_hours": 24},
 }
 
 

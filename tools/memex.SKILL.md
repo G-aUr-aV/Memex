@@ -7,9 +7,9 @@ description: Read the owner's Memex knowledge base ({{VAULT}}) and add to it fro
 `memex` is pre-approved in Claude Code, Codex and Hermes. Run it yourself; don't ask the owner first. From here you read the vault and add to its inbox; a session in the vault does the rest. If it isn't on PATH, use `python3 "{{FRAMEWORK}}/tools/memex.py"` instead.
 
 ## Read
-- `memex search <terms>` searches wiki pages by title, alias and text. Add `--in all` to include raw sources, the journal and notes.
+- `memex search <terms>` searches wiki pages and the inbox (recent captures, marked as not compiled yet) by title, alias and text, and shows the top 5 (`--limit N` for more). Compiled pages rank above per-capture source pages. Add `--in all` to include raw sources, the journal and notes.
 - `memex read "<Page>"` prints a page (name, `[[link]]`, alias or path). Search shows each page's length: for pages over 150 lines, `memex outline "<Page>"` lists the headings and `memex read "<Page>#<Heading>"` prints one section. `memex related "<Page>"` shows what links in and out.
-- When a session starts in a repo that has a project or system page (`repo:` in its frontmatter), you get that page's summary, open loops and decisions automatically.
+- When a session starts in a repo that pages name in `repo:`, `repos:` or `applies_to:`, you get them automatically: playbooks first (read them before building, testing or running anything there), then background pages with their open loops and decisions.
 - `memex context` shows the current focus, open loops, recent log and inbox.
 - Cite what you use as `[[Page]]`. If Memex has nothing, say so and continue.
 

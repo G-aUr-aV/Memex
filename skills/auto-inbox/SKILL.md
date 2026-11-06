@@ -16,7 +16,8 @@ Nobody is watching this run: never stop to ask, and when in doubt, defer the ite
 
 ## 1. Preflight
 - The context above lists every inbox item (oldest first) and the vault's uncommitted changes outside `inbox/`. If the inbox is empty, report `auto-inbox: inbox empty` and stop: no log entry, no commit.
-- Uncommitted changes under `wiki/` or `raw/` mean another writer (the owner, or an earlier run that failed) is mid-change, and `memex commit` would sweep them into this run's commit. Then switch to `--review-only` and say why in the headline. Other pending changes (journal, Home.md, new inbox files) are normal: `memex commit` includes them, so name them in the report.
+- **Resume a run that died.** New, untracked `raw/` files with no uncommitted `wiki/` changes are items an earlier run filed and never compiled (the session context warns "filed but not committed"). Their inbox originals are gone, so nothing else will ever pick them up. Treat each one as the oldest candidate: review it like an inbox item in section 2, and if it's `auto`, compile it in section 3 without `memex file` (it's already filed). These count toward the ingest limit and go into this run's log entry and commit. If one fails review, leave it where it is, list it as `review`, and start the headline with `auto-inbox: STALLED:`.
+- Any other uncommitted change under `wiki/` or `raw/` (edited pages, modified raw files) means another writer (the owner, or a run that died mid-edit) is mid-change, and `memex commit` would sweep it into this run's commit. Then switch to `--review-only` and start the headline with `auto-inbox: STALLED: <the files>`: a review-only run clears nothing, so the scheduler's notification has to say so. Other pending changes (journal, Home.md, `.obsidian/`, new inbox files) are normal: `memex commit` includes them, so name them in the report.
 
 ## 2. Review every item
 Review all items, including those after a deferred one, so deferred items can't starve later ones.
@@ -59,4 +60,4 @@ Show the decision table (item · domain · decision · reason · page plan), the
 2. Then `memex commit "inbox: auto N items"`. If lint reports errors this run caused, fix them and commit again; report any failure you can't fix. Nothing ingested means no log entry and no commit.
 3. Report in ≤12 lines. The first line is the headline, which schedulers show as a notification:
    `auto-inbox: ingested N · review R · no-material M · pending P · <commit hash | no commit | FAILED: reason>`
-   Then: the pages created and updated per item, redactions, conflicts, each deferred item with its reason, and the eligible work left. Point the owner to the Review queue on Home.md for new pages.
+   A stalled run (preflight) puts `STALLED: <reason>` right after `auto-inbox:`. Then: the pages created and updated per item, redactions, conflicts, each deferred item with its reason, and the eligible work left. Point the owner to the Review queue on Home.md for new pages.

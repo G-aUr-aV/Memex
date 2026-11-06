@@ -574,6 +574,38 @@ class TestRetrieval(Sandbox):
         hits = json.loads(self.memex("search", "retry", "--json").stdout)
         self.assertEqual(hits[0]["path"], OTHER)
 
+    def test_search_covers_the_inbox_and_labels_it(self):
+        out = self.memex("search", "hello").stdout
+        self.assertIn("inbox/2026-09-27 Some Capture.md", out)
+        self.assertIn("[inbox: captured, not compiled or reviewed yet]", out)
+        self.assertIn("No matches", self.memex("search", "hello", "--in", "wiki").stdout)
+        hits = json.loads(self.memex("search", "hello", "--json").stdout)
+        self.assertTrue(hits[0]["inbox"])
+
+    def test_compiled_pages_rank_above_sources_and_exact_titles_first(self):
+        made = {
+            "wiki/learning/sources/Jitter Note 2026-09-21.md":
+                "---\ntype: source\ndomain: learning\nsummary: Jitter spreads retries.\n---\nJitter spreads retries.\n",
+            "wiki/learning/concepts/Jitter.md":
+                "---\ntype: concept\ndomain: learning\nsummary: Random delay added to retries.\n---\n"
+                + "Jitter spreads retries over time.\n" + "Background filler about distributed systems.\n" * 6,
+        }
+        for k in range(7):
+            made[f"wiki/learning/sources/Zeta Note {k} 2026-09-2{k}.md"] = f"---\ntype: source\n---\nzeta {k}\n"
+        for rel_path, body in made.items():
+            (self.V / rel_path).write_text(body)
+        try:
+            out = self.memex("search", "jitter").stdout.splitlines()
+            self.assertTrue(out[1].startswith("- wiki/learning/concepts/Jitter.md"), out)  # exact title, long page
+            out = self.memex("search", "jitter", "retries").stdout.splitlines()
+            self.assertTrue(out[1].startswith("- wiki/learning/concepts/Jitter.md"), out)  # compiled beats source
+            out = self.memex("search", "zeta").stdout
+            self.assertIn("7 match(es); showing 5 (--limit 7 for all)", out)
+            self.assertEqual(out.count("\n- "), 5)
+        finally:
+            for rel_path in made:
+                (self.V / rel_path).unlink()
+
     def test_sections_and_outline(self):
         r = self.memex("read", "Idempotency Keys#Content")
         self.assertIn("## Content", r.stdout)
@@ -672,6 +704,61 @@ class TestSessions(Sandbox):
         self.assertLessEqual(len(out.splitlines()), 15)
         self.assertEqual(self.hook("session-start", {"cwd": str(self.tmp / "code" / "other")}).stdout, "")
         self.assertEqual(self.hook("session-start", {"cwd": str(self.V)}).stdout, "")
+
+    def test_recall_puts_playbooks_first_via_applies_to(self):
+        book = self.V / "wiki/engineering/playbooks/Running Payments Tests.md"
+        book.write_text("---\ntype: playbook\ndomain: engineering\nstatus: active\nsummary: How to run the suite.\n"
+                        "applies_to: [payments-api]\nrecall: pytest needs TZ=UTC or the invoice tests fail\n"
+                        "verified: 2026-09-25\ncreated: 2026-09-25\nupdated: 2026-09-25\n---\nSteps.\n")
+        try:
+            out = self.hook("session-start", {"cwd": str(self.repo)}).stdout
+            self.assertIn("Before building, testing or running anything here:\n- [[Running Payments Tests]] "
+                          "(playbook, verified 2026-09-25): pytest needs TZ=UTC or the invoice tests fail", out)
+            self.assertLess(out.index("Running Payments Tests"), out.index("[[Payments API]]"))
+            self.assertIn("Background (may be out of date", out)
+            self.assertIn("[[Payments API]] (system, updated 2026-09-20, not verified against code)", out)
+            self.assertLessEqual(len(out.splitlines()), 15)
+            self.assertTrue(out.rstrip().splitlines()[-1].startswith("More:"))
+        finally:
+            book.unlink()
+
+    def test_half_filed_raw_is_reported(self):
+        half = self.V / "raw/learning/2026-09-02 Half Filed.md"
+        half.write_text("---\ntitle: Half Filed\n---\nx\n")
+        try:
+            ctx = self.memex("context").stdout
+            self.assertIn("WARNING: 1 file(s) in raw/ are filed but not committed", ctx)
+            self.assertIn("raw/learning/2026-09-02 Half Filed.md", ctx)
+        finally:
+            half.unlink()
+        self.assertNotIn("filed but not committed", self.memex("context").stdout)
+
+    def test_stall_alarm_only_when_no_commit_followed_a_waiting_capture(self):
+        import time
+        other = {"cwd": str(self.tmp / "code" / "other")}
+        cfg = self.V / ".memex/vault.json"
+        saved = cfg.read_text()
+        data = json.loads(saved)
+        data["recall"] = {**data.get("recall", {}), "stall_hours": 0.0005}  # 1.8 s
+        cfg.write_text(json.dumps(data))
+        item = self.V / "inbox/2026-09-01 Forgotten Capture.md"
+        try:
+            time.sleep(2.1)  # the capture must arrive after the last commit's second
+            item.write_text("---\ntitle: Forgotten\n---\nx\n")
+            time.sleep(2.2)
+            out = self.hook("session-start", other).stdout
+            self.assertIn("Memex inbox looks stalled: 1 capture(s) have waited since", out)
+            self.assertIn("Tell the owner once", out)
+            self.assertIn("WARNING: the inbox looks stalled: 1 capture(s)", self.memex("context").stdout)
+            # an inbox run that commits anything has seen the capture: leaving it for the owner is not a stall
+            self.assertEqual(self.memex("commit", "inbox: auto 0 items").returncode, 0)
+            self.assertEqual(self.hook("session-start", other).stdout, "")
+            self.assertNotIn("looks stalled", self.memex("context").stdout)
+        finally:
+            cfg.write_text(saved)
+            if item.exists():
+                item.unlink()
+            self.memex("commit", "test: cleanup")
 
     def test_ledger_harvest_and_digests(self):
         import time

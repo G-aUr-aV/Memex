@@ -28,6 +28,24 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 - **`/auto-inbox` skill** for scheduled runs: reviews every inbox capture for material value (`auto` · `review` · `no-material`), quick-ingests up to 10 clear keepers serially without asking, and leaves the rest in `inbox/` with a reason. It never deletes, switches to review-only when `wiki/` or `raw/` already has uncommitted changes, and starts its report with a one-line headline a scheduler can show. In Claude Code it runs on Claude Sonnet 5.5 at medium effort (`model:` and `effort:` frontmatter), whatever the session's model; other agents ignore those fields.
 - `memex ctx auto-inbox`: the whole inbox (no 20-item cap) plus the vault's uncommitted changes outside `inbox/`.
 
+### Changed: retrieval and recall reach the moment of need (from the 2026-11-06 usage audit)
+- **Search covers the inbox.** `memex search` now searches `wiki/` plus `inbox/` by default, and labels inbox hits "captured, not compiled or reviewed yet". Before this, knowledge was invisible for up to days after capture. `--in wiki` keeps the old scope; `--in inbox` is new.
+- **Ranking.**
+  - Compiled pages get a ×1.5 prior and per-capture source pages and inbox items ×0.8. BM25 length normalisation used to rank short dated sources above the canonical page.
+  - A page whose title or an alias equals the query comes first.
+  - `wiki/hot.md` is no longer searched.
+  - The default limit is 5, and the header says how to see the rest.
+  - On the audit's 25-query benchmark, hit@1 went from 9 to 22 and hit@3 from 18 to 23.
+- **Recall.**
+  - Matches `applies_to:` as well as `repo:`/`repos:`, and never picks source pages.
+  - Lists playbooks first under "Before building, testing or running anything here", with an optional one-line `recall:` field (else the summary); other pages follow as background.
+  - Each line says when the page was verified, or "not verified against code" for system pages.
+  - The `More:` footer is never cut off.
+- **Stall alarm.**
+  - When the oldest inbox capture has waited longer than `recall.stall_hours` (default 24), SessionStart in other repos prints one line asking the agent to tell the owner.
+  - The vault session context warns too, and also lists `raw/` files that were filed but never committed.
+- **`/auto-inbox` resumes a run that died.** Untracked `raw/` files with no uncommitted wiki changes are compiled as the oldest items instead of forcing review-only forever. Any other dirty state makes the headline start with `auto-inbox: STALLED:`.
+
 ### Added: automatic memory (Phase 1)
 - **Repo-aware recall:** a global SessionStart hook (`memex hook session-start`, Claude Code and Codex; Hermes on its first turn) prints what the wiki knows about the current repo: pages whose `repo:` matches, their open loops and linked decisions. It prints nothing when nothing matches.
 - **Session ledger + `/harvest`:** a global SessionEnd hook records each session outside the vault in `.memex/sessions.jsonl`. `memex harvest` turns Claude Code and Codex transcripts (including Codex's JavaScript tool mode) into verbatim, redacted digests; the `/harvest` skill files them and compiles durable knowledge; `/close` runs it first. The `harvest` settings are `enabled`, `exclude` and `min_tool_calls`.
