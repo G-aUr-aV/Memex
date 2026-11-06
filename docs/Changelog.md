@@ -28,6 +28,17 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 - **`/auto-inbox` skill** for scheduled runs: reviews every inbox capture for material value (`auto` · `review` · `no-material`), quick-ingests up to 10 clear keepers serially without asking, and leaves the rest in `inbox/` with a reason. It never deletes, switches to review-only when `wiki/` or `raw/` already has uncommitted changes, and starts its report with a one-line headline a scheduler can show. In Claude Code it runs on Claude Sonnet 5.5 at medium effort (`model:` and `effort:` frontmatter), whatever the session's model; other agents ignore those fields.
 - `memex ctx auto-inbox`: the whole inbox (no 20-item cap) plus the vault's uncommitted changes outside `inbox/`.
 
+### Added: `memex audit` and `/audit`, so "is Memex helping?" has numbers
+- **`memex audit`** (`tools/audit.py`) reads Claude Code transcripts (`~/.claude/projects`, or `$MEMEX_TRANSCRIPTS`) and the vault for a window (`--days N`, default 14, or `--since`/`--until`). It reports, for sessions outside the vault and the framework:
+  - use: % of sessions that looked up or captured, captures written vs refused by the duplicate gate, captures per full read;
+  - retrieval: zero-hit and partial-only queries, follow-up reads, recalled pages opened later, stall alarms;
+  - re-discovery: captures repeating an earlier capture from another session;
+  - cost and latency: Memex's share of input and output tokens, time spent writing captures;
+  - pipeline health: inbox, half-filed raw, conflicts, verified system pages, unreviewed pages, hot.md age, backup;
+  - the vault's search benchmark, `meta/audit/search-benchmark.tsv` (`query<TAB>expected page`), with hit@1 and hit@3.
+- `--record` appends the key numbers to the machine-local `.memex/audit.jsonl`, and each audit prints "was … in <window>" against the last recorded one. `--report` writes `meta/audit/<date>.md`; `--json` prints everything; `--lookups` lists every lookup with its output. Read-only otherwise, and runs in about 2 s.
+- **`/audit` skill**: the numbers, then a judged sample of real lookups (relevance, used, impact, stale) with the 2026-11-06 audit's rubric, written into the report with a short verdict, then logged and committed.
+
 ### Changed: fewer, better captures, and claims checked against the code (audit follow-up)
 - **Capture discipline.** The standing instructions (the CLAUDE.md / AGENTS.md block and the `memex` skill) now say:
   - capture only durable, *settled* knowledge, and search first;

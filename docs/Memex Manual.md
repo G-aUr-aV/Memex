@@ -96,6 +96,7 @@ Already configured for you: links auto-update when files move, attachments go to
 | `/today` · `/close` · `/weekly` | the daily and weekly routines | — |
 | `/lint` | weekly health check (`--deep` monthly) | `/lint` |
 | `/verify` | check system pages and playbooks against the code; stale claims get struck with a code snapshot as the citation | `/verify payments-api` |
+| `/audit` | every two weeks: is Memex helping? Usage, retrieval, re-discovery, cost, pipeline health and a search benchmark against the last audit, plus a judged sample of real lookups (`memex audit` alone for just the numbers) | `/audit --days 14` |
 | `memex …` | from any project, in any agent or your shell: `search`, `read`, `outline`, `related`, `capture`, `file`, `rm`, `commit`, `harvest`, `backup`, `doctor` | `memex search retry storms` |
 
 Plain requests work too: "add this to Memex", "what do I know about X", "prep me for tomorrow's arch review". In Codex, skills start with `$` (`$ingest`).

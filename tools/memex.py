@@ -18,6 +18,8 @@
                                               the owner attached a private remote)
   memex ctx <ingest|inbox|lint|today|close|weekly>   live context for a skill
   memex index · memex lint [--quick|--report]
+  memex audit [--days N | --since D --until D] [--json] [--lookups] [--report] [--record]   is Memex earning its
+                                              keep? use, retrieval, re-discovery, cost, latency, pipeline health
   memex harvest [--digest ID | --done ID | --skip-trivial]   sessions recorded at session end, for /harvest
   memex backup [--to DIR]                     git bundle of the vault (restore with git clone)
   memex pull [--merge] · memex push · memex remote   sync with the private remote, if one is attached
@@ -1052,6 +1054,8 @@ def cmd_hook(a):
 
 
 def main():
+    if sys.argv[1:2] == ["audit"]:  # its own argparse (tools/audit.py); REMAINDER can't pass leading --options
+        run_tool("audit.py", *sys.argv[2:])
     ap = argparse.ArgumentParser(prog="memex", description="Agent-neutral access to the owner's Memex vault.")
     ap.add_argument("--version", action="version", version=f"memex {VERSION}")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1102,6 +1106,9 @@ def main():
     s.add_argument("--quick", action="store_true")
     s.add_argument("--report", action="store_true")
     s.set_defaults(fn=lambda a: run_tool("lint.py", *(["--quick"] if a.quick else []), *(["--report"] if a.report else [])))
+    s = sub.add_parser("audit", add_help=False, help="is Memex earning its keep? (tools/audit.py; main() passes its args)")
+    s.add_argument("rest", nargs=argparse.REMAINDER)
+    s.set_defaults(fn=lambda a: run_tool("audit.py", *a.rest))
     s = sub.add_parser("init", help="create a new vault (setup.sh does this for you)")
     s.add_argument("path")
     s.add_argument("--name")

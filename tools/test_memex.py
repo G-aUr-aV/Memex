@@ -9,6 +9,7 @@ HOME and a fake global git config that holds a "real" identity plus an includeIf
 vault's layout, its local-only git safety, the guard (Claude Code, Codex and Hermes payloads), the memex
 CLI, sync, domains, vault locations, and agent integration.
 """
+import datetime
 import json
 import os
 import re
@@ -776,6 +777,65 @@ class TestSessions(Sandbox):
             self.assertTrue(out.rstrip().splitlines()[-1].startswith("More:"))
         finally:
             book.unlink()
+
+    def test_audit_measures_use_retrieval_rediscovery_and_trend(self):
+        proj = self.tmp / "cc-projects" / "-code-payments-api"
+        proj.mkdir(parents=True, exist_ok=True)
+        usage = {"input_tokens": 10, "cache_read_input_tokens": 1000, "output_tokens": 50}
+
+        def session(name, sid, cwd, calls, recall=""):
+            lines = [{"type": "attachment", "sessionId": sid, "cwd": cwd, "timestamp": "2026-09-30T10:00:00Z",
+                      "attachment": {"type": "hook_success", "hookName": "SessionStart:startup", "content": recall}}]
+            for i, (cmd, res) in enumerate(calls):
+                tid = f"{sid}-t{i}"
+                lines += [{"type": "assistant", "sessionId": sid, "cwd": cwd, "timestamp": f"2026-09-30T10:{10 + i * 2:02d}:00Z",
+                           "message": {"id": f"{sid}-m{i}", "usage": usage, "content": [
+                               {"type": "tool_use", "id": tid, "name": "Bash", "input": {"command": cmd}}]}},
+                          {"type": "user", "sessionId": sid, "cwd": cwd, "timestamp": f"2026-09-30T10:{11 + i * 2:02d}:00Z",
+                           "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid, "content": res}]}}]
+            lines.append({"type": "assistant", "sessionId": sid, "cwd": cwd, "timestamp": "2026-09-30T11:00:00Z",
+                          "message": {"id": f"{sid}-end", "usage": usage, "content": [{"type": "text", "text": "done"}]}})
+            (proj / name).write_text("".join(json.dumps(l) + "\n" for l in lines))
+
+        cap = "memex capture --title \"Invoice timezone bug fixed by UTC\" --domain engineering --why w <<'EOF'\nx\nEOF"
+        session("a.jsonl", "sess-a", str(self.repo), [
+            ("memex search refund window", "No matches for 'refund window' in wiki, inbox/. Try synonyms"),
+            ('memex read "Payments API"', "<!-- wiki/engineering/systems/Payments API.md -->\nbody"),
+            (cap, "inbox/2026-09-30 Invoice timezone bug fixed by UTC.md")],
+            recall="## Memex: what the owner's knowledge base says about `payments-api`\n- [[Payments API]] (system): x")
+        session("b.jsonl", "sess-b", str(self.repo), [
+            (cap.replace("by UTC", "by UTC fixture"), "inbox/2026-09-30 Invoice timezone bug fixed by UTC fixture.md"),
+            (cap, "memex: capture refused: Memex may already have this:\n  - inbox/x.md")])
+        session("c.jsonl", "sess-c", str(self.V), [])
+        bench = self.V / "meta/audit/search-benchmark.tsv"
+        bench.parent.mkdir(parents=True, exist_ok=True)
+        bench.write_text("# query<TAB>page\npayments api\tPayments API\n")
+        env = {**self.env, "MEMEX_TRANSCRIPTS": str(self.tmp / "cc-projects")}
+        record, report = self.V / ".memex/audit.jsonl", self.V / f"meta/audit/{datetime.date.today().isoformat()}.md"
+        try:
+            r = self.memex("audit", "--since", "2026-09-30", "--until", "2026-09-30", "--json", env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            m = json.loads(r.stdout)["metrics"]
+            want = {"sessions": 2, "vault_sessions": 1, "lookup_sessions": 1, "lookup_pct": 50.0, "capture_sessions": 2,
+                    "captures": 2, "gate_refusals": 1, "queries": 1, "zero_hit_pct": 100.0, "reads": 1,
+                    "recall_sessions": 1, "recall_opened_pct": 100.0, "recaptured": 1, "bench_hit1": 1, "bench_hit3": 1}
+            self.assertEqual({k: m[k] for k in want}, want)
+            self.assertGreater(m["memex_token_pct"], 0)
+            r = self.memex("audit", "--since", "2026-09-30", "--until", "2026-09-30", "--record", "--report", env=env)
+            self.assertIn("Looked something up: 1 (50.0%)", r.stdout)
+            self.assertTrue(report.exists())
+            self.assertEqual(len(record.read_text().splitlines()), 1)
+            self.assertEqual(self.git("check-ignore", "-q", ".memex/audit.jsonl").returncode, 0)  # machine-local
+            out = self.memex("audit", "--since", "2026-09-29", "--until", "2026-09-30", env=env).stdout
+            self.assertIn("(was 50.0% in 2026-09-30..2026-09-30)", out)
+            self.assertIn("Search benchmark: hit@1 1/1", out)
+            listed = self.memex("audit", "--since", "2026-09-30", "--until", "2026-09-30", "--lookups", env=env).stdout
+            self.assertIn("a.jsonl · tool sess-a-t0\n$ memex search refund window\nNo matches", listed)
+            self.assertNotIn("capture", listed)  # lookups only
+        finally:
+            for p in (bench, record, report):
+                if p.exists():
+                    p.unlink()
 
     def test_ctx_verify_lists_pages_and_checkouts(self):
         ledger = self.V / ".memex/sessions.jsonl"

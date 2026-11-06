@@ -13,7 +13,7 @@ A vault holds three kinds of files:
   vault config .memex/vault.json (name, domains, identity) · .memex/local.md (vault-only rules)
                · .memex/domains.json + .memex/domains/<name>.md (vault-only domains)                     committed
   machine      .memex/remote.json (the private remote, if attached) · state.json · sessions.jsonl ·
-               backup.json · backup/                                                        git-excluded
+               audit.jsonl · backup.json · backup/                                                        git-excluded
   managed      rendered from the framework on every sync (see outputs()): excluded from the vault's git
                through .git/info/exclude and protected by the guard. Change them in the framework.
 """
@@ -228,8 +228,8 @@ def write_exclude(v: Path, outs: dict):
         entry = f"/{d}/" if d else f"/{rel}"
         if entry not in lines:
             lines.append(entry)
-    lines += ["/.memex/state.json", "/.memex/backup/", "/.memex/sessions.jsonl", "/.memex/backup.json",
-              "/.memex/remote.json"]
+    lines += ["/.memex/state.json", "/.memex/backup/", "/.memex/sessions.jsonl", "/.memex/audit.jsonl",
+              "/.memex/backup.json", "/.memex/remote.json"]
     ex = git_dir / "info" / "exclude"
     text = ex.read_text(encoding="utf-8") if ex.exists() else ""
     text = re.sub(re.escape(EXCLUDE_BEGIN) + r".*?" + re.escape(EXCLUDE_END) + r"\n?", "", text, flags=re.S).rstrip("\n")
@@ -811,7 +811,7 @@ def detach_vault(v: Path):
         if p.is_symlink() or p.is_file():
             p.unlink()
             prune_empty(v, p.parent)
-    for name in ("state.json", "sessions.jsonl", "backup.json", "remote.json"):
+    for name in ("state.json", "sessions.jsonl", "audit.jsonl", "backup.json", "remote.json"):
         (v / ".memex" / name).unlink(missing_ok=True)
     ex = v / ".git" / "info" / "exclude"
     if ex.exists():

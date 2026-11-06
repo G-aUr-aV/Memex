@@ -15,7 +15,7 @@ This vault is **{{VAULT_NAME}}** (`{{VAULT}}`). This file is rendered from the M
 | `journal/` | The owner's daily notes and reviews | read and cite; create today's note from template; edit only its `> [!brief]` block |
 | `notes/` | The owner's own evergreen notes | read and link; never write (suggest text in chat) |
 | `outputs/` | deliverables: decks, drafts, briefs | write when asked (`status: draft`) |
-| `meta/bases/`, `meta/lint/` | dashboards, lint reports | use; lint writes reports |
+| `meta/bases/`, `meta/lint/`, `meta/audit/` | dashboards, lint and audit reports, the search benchmark | use; lint and audit write reports; add benchmark lines |
 | `Home.md`, `.obsidian/` | the owner's dashboard and viewer settings | propose a diff; edit only with approval |
 | `.memex/local.md`, `.memex/domains*` | this vault's own rules and domains | propose a diff; edit only with approval |
 | `.memex/vault.json`, `.memex/state.json` | vault settings (name, domains, commit identity) and sync state | never (the owner and `memex sync` only) |
@@ -67,7 +67,7 @@ Templates for every type: `meta/templates/wiki/`. Read the matching template bef
 - `/inbox` — quick serial processing of inbox captures, then one change summary. `/auto-inbox` is the unattended version for scheduled runs: it ingests only clear keepers and leaves the rest in inbox with a reason.
 - `/harvest` — compile the owner's agent sessions in other repos (recorded automatically at session end) into knowledge; `/close` runs it first.
 - `/ask <question>` — read-only answer with citations; offers `/save`. `/save` files an answer or thread as a synthesis page.
-- `/lint` — health check. `/verify [page|repo]` — check system pages and playbooks against the code (read-only on the code), strike stale claims with a code snapshot as the citation. `/today`, `/close`, `/weekly` — daily-driver routines. `/prep <person|project>` — meeting prep.
+- `/lint` — health check. `/audit` — is Memex earning its keep: usage, retrieval, re-discovery, cost, pipeline health and a judged sample of lookups, against the last audit (`memex audit` alone for the numbers). `/verify [page|repo]` — check system pages and playbooks against the code (read-only on the code), strike stale claims with a code snapshot as the citation. `/today`, `/close`, `/weekly` — daily-driver routines. `/prep <person|project>` — meeting prep.
 - Never ingest in parallel: the index, log and cross-links are shared state. You may *read* sources in parallel.
 - If one ingest would touch more than 15 pages (not counting the generated indexes, log and hot.md), trim it to the pages that matter most and list the rest in the report as follow-ups. Prefer fewer, richer pages: a short source should create few pages.
 - **Tasks**: only the owner's own commitments become checkboxes, as `- [ ] <what> 📅 YYYY-MM-DD ([[source|src]])` (the due date is optional). Other people's commitments are plain bullets under their `## Open loops` (`- Rahul owes: …`). Never leave empty `- [ ]` placeholders.
