@@ -4,12 +4,14 @@
   memex path                                  print the vault path
   memex context [--brief]                     what a session starts with: hot.md, recent log, inbox, lint age
                                               (also re-renders the vault's managed files if the framework changed)
-  memex search <terms…> [--in wiki|inbox|raw|journal|notes|all] [--limit N] [--json]   BM25-ranked; default
-                                              scope is wiki/ plus inbox/ (captures not yet compiled), 5 hits
+  memex search <terms…> [--in wiki|inbox|raw|journal|notes|all] [--limit N] [--all-sources] [--json]
+                                              BM25-ranked; default scope is wiki/ plus inbox/, 5 hits; source pages
+                                              a compiled page above already cites are folded away
   memex read <page name | [[link]] | alias | vault path>[#Heading]      a page, or just one section
   memex outline <page> · memex related <page>          headings with sizes · links in and out, co-cited pages
   memex capture --title T [--domain D] [--why W] [--project P] [--source S]
-                [--action create|update|supersede|delete --target PAGE]    (body on stdin)
+                [--action create|update|supersede|delete --target PAGE] [--new]    (body on stdin; a new
+                capture that looks like an existing page or inbox item is refused unless --new)
   memex file inbox/<file> --domain D [--name "YYYY-MM-DD Title.md"]   file an inbox item into raw/<domain>/
   memex rm <vault path> [--force]             move a wiki/inbox/outputs file to .trash/ (git keeps history)
   memex commit "<op>: <title>" [--force]      rebuild indexes, lint --quick, commit the vault (then push, if
@@ -79,9 +81,9 @@ def pointer() -> str:
     v = V()
     d = "|".join(ml.domain_names(v))
     return f"""## Memex: the owner's knowledge base ({v})
-Use it on your own initiative. You don't need to ask the owner first; these commands are pre-approved.
-- **Look up** before answering about the owner's projects, people, decisions or past work, before drafting status updates, and when a command fails twice: `memex search <terms>`, then `memex read "<Page>"`.
-- **Capture** anything durable this session produces (a root cause, a decision and its reason, a gotcha, a command that worked, a preference the owner states): `memex capture --title "<Title>" --domain <{d}> --why "<one line>"` with the note on stdin (3-20 lines, via a heredoc). Say the captured path in one line at the end of your reply.
+Use it on your own initiative. You don't need to ask the owner first; these commands are pre-approved. Treat what it says as a lead to check against the code, not as ground truth.
+- **Look up** before answering about the owner's projects, people, decisions or past work, before drafting status updates, before building, testing or running something in a repo for the first time in a session, and when a command fails twice: `memex search <terms>`, then `memex read "<Page>"`. If the session started with Memex playbooks for this repo, follow them.
+- **Capture** only what is durable *and* settled: a confirmed root cause, a decision and its reason, a gotcha, a command that worked, a preference the owner states. Work in progress (uncommitted designs, temp branches, gap lists) waits until it settles. Search first: if Memex already has it, capture only what you add or correct, with `--action update --target "<Page>"`. Otherwise `memex capture --title "<Title>" --domain <{d}> --why "<one line>"` with the note on stdin (3-20 lines, via a heredoc), with "as of YYYY-MM-DD" on volatile facts. Capture refuses a likely duplicate and names the page to update instead; add `--new` only when the note really is new.
 - **Change or remove** existing knowledge: capture with `--action update|supersede|delete --target "<Page>"` and say what's wrong and why in the note. A session in the vault applies it at its next inbox run.
 - **The inbox is the only way in from here.** Don't edit, move or delete files in the vault yourself; the guard refuses, so use `memex capture`.
 - Sessions are recorded when they end and compiled by `/harvest`, but capture decisive findings right away: the harvest only sees what the transcript shows.
@@ -111,6 +113,9 @@ def safety_notes(v: Path):
     elif age > warn:
         notes.append(f"Backup: last one {age} days ago: run `memex backup`.")
     return notes
+
+
+HOT_STALE_DAYS = 7
 
 
 def half_filed(v: Path):
@@ -150,6 +155,14 @@ def session_context(rebuild=True) -> str:
     hot = v / "wiki" / "hot.md"
     if hot.exists():
         _, body = frontmatter(hot.read_text(encoding="utf-8", errors="ignore"))
+        last = ml.git(v, "log", "-1", "--format=%cs", "--", "wiki/hot.md").stdout.strip()
+        try:
+            days = (TODAY - datetime.date.fromisoformat(last)).days if last else None
+        except ValueError:
+            days = None
+        if days is not None and days > HOT_STALE_DAYS:
+            out.append(f"(Last rewritten {last}, {days} days ago, so it may be out of date: trust the log and the pages "
+                       "over it. /close or /weekly rewrites it.)")
         out += body.strip("\n").splitlines()[:40]
     out += ["", "## Recent log"]
     log = v / "wiki" / "log.md"
@@ -255,6 +268,59 @@ def prior(d) -> float:
 
 
 PRIOR_COMPILED, PRIOR_SOURCE, PRIOR_INBOX = 1.5, 0.8, 0.8
+STOP = set("a an the and or of in on to for by is are was with from vs via it its as at be no not only into how why "
+           "what when".split())
+
+
+def link_targets(d) -> set:
+    """Names a page links to or cites: body wikilinks plus the frontmatter `sources:`/`raw:` links."""
+    text = d["body"] + " " + " ".join(as_list(d["fm"].get("sources")) + as_list(d["fm"].get("raw")))
+    return {m.group(2).strip() for m in LINK.finditer(text)}
+
+
+def fold_covered(hits):
+    """Drop a source page when a compiled page ranked above it already cites it (its raw file or the page itself):
+    the compiled page holds the current version, and repeated captures of one fact stop crowding the results."""
+    shown, folded, covering = [], 0, set()
+    for s, d in hits:
+        raw = {m.group(2).strip() for m in LINK.finditer(" ".join(as_list(d["fm"].get("raw"))))}
+        if is_source(d) and d["path"].startswith("wiki/") and ({d["title"]} | raw) & covering:
+            folded += 1
+            continue
+        shown.append((s, d))
+        if d["path"].startswith("wiki/") and not is_source(d):
+            covering |= link_targets(d)
+    return shown, folded
+
+
+def content_words(s: str) -> set:
+    return {w for w in words(s) if w not in STOP and not re.fullmatch(r"(19|20)\d\d", w)}
+
+
+def near_duplicates(v: Path, title: str, limit=3):
+    """Pages or inbox items whose title or an alias already says most of what `title` says (≥60% of its words)."""
+    new = content_words(title)
+    if len(new) < 3:
+        return []
+    _, hits, _ = rank(v, title, "default")
+    out = []
+    for _, d in hits[:20]:
+        if max((len(new & (set(n) - STOP)) / len(new) for n in d["names"] if n), default=0) >= 0.6:
+            out.append(d)
+            if len(out) == limit:
+                break
+    return out
+
+
+def compiled_into(v: Path, d) -> str:
+    """The compiled page that cites a source page (its raw file or the page itself), if any: the page to update."""
+    if not is_source(d):
+        return ""
+    names = {d["title"]} | {m.group(2).strip() for m in LINK.finditer(" ".join(as_list(d["fm"].get("raw"))))}
+    for c in docs(v, "wiki"):
+        if not is_source(c) and link_targets(c) & names:
+            return c["title"]
+    return ""
 
 
 def rank(v: Path, query: str, scope="default"):
@@ -304,6 +370,9 @@ def cmd_search(a):
     terms, hits, partial = rank(v, query, a.scope)
     if not terms:
         fail("give at least one search term")
+    folded = 0
+    if not a.all_sources:
+        hits, folded = fold_covered(hits)
     if a.json:
         print(json.dumps([{"path": d["path"], "title": d["title"], "summary": str(d["fm"].get("summary") or ""),
                            "lines": d["body"].count("\n") + 1, "score": s, "snippet": snippet(d["body"], terms),
@@ -315,7 +384,9 @@ def cmd_search(a):
         return
     note = " (no page has every term; showing partial matches)" if partial else ""
     more = f" (--limit {len(hits)} for all)" if len(hits) > a.limit else ""
-    print(f"{len(hits)} match(es){note}; showing {min(len(hits), a.limit)}{more}:")
+    fold = (f"; {folded} source page(s) folded into the pages that cite them (--all-sources lists them)"
+            if folded else "")
+    print(f"{len(hits)} match(es){note}{fold}; showing {min(len(hits), a.limit)}{more}:")
     for _, d in hits[:a.limit]:
         summary = str(d["fm"].get("summary") or d["fm"].get("why") or "")
         tag = " [inbox: captured, not compiled or reviewed yet]" if d["path"].startswith("inbox/") else ""
@@ -481,6 +552,19 @@ def cmd_capture(a):
     if found:
         fail(f"capture refused: possible {', '.join(found)}. Remove it (store a pointer such as "
              "'1Password: <item>') and retry.")
+    if a.action == "create" and not a.new:
+        dups = near_duplicates(v, title)
+        if dups:
+            rows = []
+            for d in dups:
+                about = d["fm"].get("summary") or d["fm"].get("why")
+                into = compiled_into(v, d)
+                rows.append(f"  - {d['path']}" + (f": {about}" if about else "")
+                            + (f" (compiled into [[{into}]]: update that page)" if into else ""))
+            listed = "\n".join(rows)
+            fail("capture refused: Memex may already have this:\n" + listed + "\nRead it first (memex read "
+                 "\"<Page>\"). If your note adds or corrects something, rerun with --action update --target "
+                 "\"<Page>\"; if it is genuinely new knowledge, rerun with --new.")
     inbox = v / "inbox"
     inbox.mkdir(exist_ok=True)
     dest, n = inbox / f"{TODAY.isoformat()} {title}.md", 2
@@ -980,6 +1064,8 @@ def main():
     s.add_argument("--in", dest="scope", choices=sorted(SCOPES), default="default",
                    help="default: wiki/ plus inbox/ (captures not compiled yet)")
     s.add_argument("--limit", type=int, default=5)
+    s.add_argument("--all-sources", action="store_true",
+                   help="also list source pages that a compiled page above already cites")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_search)
     s = sub.add_parser("read", help='a page by name, [[link]], alias or path; "Page#Heading" prints one section')
@@ -993,6 +1079,7 @@ def main():
     s.add_argument("--source", default="agent session")
     s.add_argument("--action", choices=["create", "update", "supersede", "delete"], default="create")
     s.add_argument("--target")
+    s.add_argument("--new", action="store_true", help="capture even if a page or inbox item looks like the same thing")
     s.set_defaults(fn=cmd_capture)
     s = sub.add_parser("file", help="move an inbox item into raw/<domain>/ (create-only), fixing links if renamed")
     s.add_argument("path")

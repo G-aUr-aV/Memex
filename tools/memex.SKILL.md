@@ -14,7 +14,7 @@ description: Read the owner's Memex knowledge base ({{VAULT}}) and add to it fro
 - Cite what you use as `[[Page]]`. If Memex has nothing, say so and continue.
 
 ## Create (the default way to add knowledge)
-Capture when this session produced something worth keeping: a root cause, a decision and its reason, a gotcha, a command or procedure that worked, a preference or fact the owner stated.
+Capture when this session produced something worth keeping *and* it has settled: a confirmed root cause, a decision and its reason, a gotcha, a command or procedure that worked, a preference or fact the owner stated. Work in progress (uncommitted designs, temp branches, gap lists) waits until it settles. **Search first** (`memex search <title words>`): if Memex already has it, queue only what you add or correct as an update (below).
 
 ```bash
 memex capture --title "Flaky Test Was a Timezone Bug" --domain {{FIRST_DOMAIN}} --why "cost 2 hours; will recur" <<'EOF_NOTE'
@@ -24,7 +24,9 @@ EOF_NOTE
 - `--domain` is one of: {{DOMAINS}}. `--project` defaults to the current folder's name.
 - Write 3-20 plain lines with minimal context. Keep code blocks short.
 - Never include secrets, tokens, credentials, personal IDs, other people's personal data or URLs with tokens. The command refuses obvious ones.
-- End your reply with one line naming the captured file. Captures are compiled into wiki pages at the vault's next `/inbox` run.
+- Put "as of YYYY-MM-DD" on volatile facts (status, branch, version, counts).
+- Capture refuses a title that looks like an existing page or inbox item, and names it: read it, then queue an update if you add something. Add `--new` only when your note really is new knowledge.
+- Captures are compiled into wiki pages at the vault's next inbox run, and are searchable right away.
 
 ## Update and delete
 - **Queue it:** `memex capture --action update|supersede|delete --target "<Page>" --title "…" --why "…"`, with the new facts or the reason on stdin. That covers a wrong fact the owner just corrected, a status that changed, a page that should go. The vault's next inbox run applies it with citations, a Timeline line and history.

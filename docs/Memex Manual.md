@@ -95,6 +95,7 @@ Already configured for you: links auto-update when files move, attachments go to
 | `/prep` | 1:1s, meetings, stakeholder conversations | `/prep my manager` |
 | `/today` · `/close` · `/weekly` | the daily and weekly routines | — |
 | `/lint` | weekly health check (`--deep` monthly) | `/lint` |
+| `/verify` | check system pages and playbooks against the code; stale claims get struck with a code snapshot as the citation | `/verify payments-api` |
 | `memex …` | from any project, in any agent or your shell: `search`, `read`, `outline`, `related`, `capture`, `file`, `rm`, `commit`, `harvest`, `backup`, `doctor` | `memex search retry storms` |
 
 Plain requests work too: "add this to Memex", "what do I know about X", "prep me for tomorrow's arch review". In Codex, skills start with `$` (`$ingest`).

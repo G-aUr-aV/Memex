@@ -28,6 +28,24 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 - **`/auto-inbox` skill** for scheduled runs: reviews every inbox capture for material value (`auto` · `review` · `no-material`), quick-ingests up to 10 clear keepers serially without asking, and leaves the rest in `inbox/` with a reason. It never deletes, switches to review-only when `wiki/` or `raw/` already has uncommitted changes, and starts its report with a one-line headline a scheduler can show. In Claude Code it runs on Claude Sonnet 5.5 at medium effort (`model:` and `effort:` frontmatter), whatever the session's model; other agents ignore those fields.
 - `memex ctx auto-inbox`: the whole inbox (no 20-item cap) plus the vault's uncommitted changes outside `inbox/`.
 
+### Changed: fewer, better captures, and claims checked against the code (audit follow-up)
+- **Capture discipline.** The standing instructions (the CLAUDE.md / AGENTS.md block and the `memex` skill) now say:
+  - capture only durable, *settled* knowledge, and search first;
+  - add to what's already there with `--action update`;
+  - put "as of" on volatile facts;
+  - look things up before building, testing or running in a repo;
+  - treat Memex as a lead to check against the code.
+  - "Say the captured path at the end of your reply" is gone.
+- **Duplicate gate.** `memex capture` refuses a new capture whose title says what an existing page, source or inbox item already says (≥60% of its words). It names the match, and for a source page the compiled page to update instead. `--new` overrides.
+- **Folded sources.** `memex search` folds away source pages that a compiled page ranked above them already cites; `--all-sources` lists them.
+- **`/verify` skill + `memex ctx verify`.** Check system pages and playbooks against the code they describe, read-only on the code.
+  - The evidence is saved as a verbatim code snapshot in `raw/`, which stale claims are struck against.
+  - Summaries are refreshed, and `verified_on`/`verified_at_commit` are filled in.
+  - Code that settles an open conflict is attached as evidence, but the owner decides.
+  - The ctx lists pages least recently verified first, plus each repo's main checkout from the session ledger.
+- **Summaries follow the body.** The schema and `/ingest` now rewrite `summary:` and `> [!summary]` whenever an update changes what a page says is current.
+- **Stale `hot.md` is flagged.** The vault session context marks `wiki/hot.md` when it hasn't been rewritten for over 7 days.
+
 ### Changed: retrieval and recall reach the moment of need (from the 2026-11-06 usage audit)
 - **Search covers the inbox.** `memex search` now searches `wiki/` plus `inbox/` by default, and labels inbox hits "captured, not compiled or reviewed yet". Before this, knowledge was invisible for up to days after capture. `--in wiki` keeps the old scope; `--in inbox` is new.
 - **Ranking.**

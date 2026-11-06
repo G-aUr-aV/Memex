@@ -508,6 +508,40 @@ class TestCLI(Sandbox):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("capture refused", r.stderr)
 
+    def test_capture_refuses_a_likely_duplicate(self):
+        page = self.V / "wiki/learning/concepts/Retry Budget Exhaustion.md"
+        page.write_text("---\ntype: concept\ndomain: learning\nsummary: Workers stop retrying when the budget runs out.\n"
+                        "---\nx\n")
+        made = []
+        try:
+            args = ["capture", "--title", "Retry budget exhaustion in workers", "--domain", "learning"]
+            r = self.memex(*args, stdin="note\n")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("capture refused: Memex may already have this", r.stderr)
+            self.assertIn("concepts/Retry Budget Exhaustion.md", r.stderr)
+            for extra in (["--new"], ["--action", "update", "--target", "Retry Budget Exhaustion"]):
+                r = self.memex(*args, *extra, stdin="note\n")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                made.append(self.V / r.stdout.strip())
+        finally:
+            page.unlink()
+            for p in made:
+                p.unlink()
+
+    def test_context_flags_a_stale_hot_md(self):
+        self.assertNotIn("may be out of date", self.memex("context").stdout)
+        hot = self.V / "wiki/hot.md"
+        saved = hot.read_text()
+        hot.write_text(saved + "\n")
+        try:
+            r = self.memex("commit", "close: old hot", env={**self.env, "GIT_COMMITTER_DATE": "2026-01-01T12:00:00"})
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("(Last rewritten 2026-01-01", self.memex("context").stdout)
+        finally:
+            hot.write_text(saved)
+            self.memex("commit", "close: hot")
+        self.assertNotIn("may be out of date", self.memex("context").stdout)
+
     def test_file_moves_inbox_items_into_raw(self):
         (self.V / "inbox/clip.md").write_text("---\ntitle: Clip\n---\nbody\n")
         page = self.V / "wiki/learning/concepts/Links Clip.md"
@@ -581,6 +615,27 @@ class TestRetrieval(Sandbox):
         self.assertIn("No matches", self.memex("search", "hello", "--in", "wiki").stdout)
         hits = json.loads(self.memex("search", "hello", "--json").stdout)
         self.assertTrue(hits[0]["inbox"])
+
+    def test_search_folds_sources_a_compiled_page_cites(self):
+        made = {
+            "wiki/learning/sources/Backoff Article 2026-09-21.md":
+                "---\ntype: source\ndomain: learning\nraw: \"[[2026-09-21 Backoff Article]]\"\nsummary: Backoff "
+                "spreads retries.\n---\nBackoff spreads retries out.\n",
+            "wiki/learning/concepts/Backoff.md":
+                "---\ntype: concept\ndomain: learning\nsummary: Waiting longer between retries.\nsources: "
+                "[\"[[2026-09-21 Backoff Article]]\"]\n---\nBackoff spreads retries ([[2026-09-21 Backoff Article|src]]).\n",
+        }
+        for rel_path, body in made.items():
+            (self.V / rel_path).write_text(body)
+        try:
+            out = self.memex("search", "backoff").stdout
+            self.assertIn("1 source page(s) folded into the pages that cite them", out)
+            self.assertIn("concepts/Backoff.md", out)
+            self.assertNotIn("sources/Backoff Article", out)
+            self.assertIn("sources/Backoff Article", self.memex("search", "backoff", "--all-sources").stdout)
+        finally:
+            for rel_path in made:
+                (self.V / rel_path).unlink()
 
     def test_compiled_pages_rank_above_sources_and_exact_titles_first(self):
         made = {
@@ -721,6 +776,20 @@ class TestSessions(Sandbox):
             self.assertTrue(out.rstrip().splitlines()[-1].startswith("More:"))
         finally:
             book.unlink()
+
+    def test_ctx_verify_lists_pages_and_checkouts(self):
+        ledger = self.V / ".memex/sessions.jsonl"
+        saved = ledger.read_text() if ledger.exists() else None
+        try:
+            self.hook("session-end", {"session_id": "verify-sess", "cwd": str(self.repo)}, "claude")
+            out = self.memex("ctx", "verify").stdout
+            self.assertIn("- Payments API (system; repo: acme/payments-api; verified: never; updated: 2026-09-20)", out)
+            self.assertIn(f"- payments-api: {self.repo}", out)
+        finally:
+            if saved is None:
+                ledger.unlink(missing_ok=True)
+            else:
+                ledger.write_text(saved)
 
     def test_half_filed_raw_is_reported(self):
         half = self.V / "raw/learning/2026-09-02 Half Filed.md"
