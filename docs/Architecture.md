@@ -177,4 +177,4 @@ sequenceDiagram
 python3 tools/test_memex.py   # temp framework copy + vault; fake HOME and global git config; never touches yours
 bash -n setup.sh tools/setup-qmd.sh
 ```
-CI (`.github/workflows/ci.yml`) runs these on macOS and Linux, plus a check that no knowledge is tracked.
+CI (`.github/workflows/ci.yml`) runs these on macOS and Linux, plus a check that no knowledge is tracked. Python 3.9 uses Ubuntu 24.04 because `setup-python` has no Python 3.9 build for Ubuntu 26.04; Python 3.12 keeps `ubuntu-latest`, and both versions also run on `macos-latest`.
