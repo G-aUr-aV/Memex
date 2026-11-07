@@ -142,7 +142,7 @@ def session_hooks(agent):
     """Global hooks for every session on this machine: repo-aware recall at start, pages a prompt is clearly about
     (Claude Code), the ledger at the end."""
     hooks = {"SessionStart": f"{ml.memex_command()} hook session-start"}
-    if agent == "claude":
+    if agent in ("claude", "codex"):
         hooks["UserPromptSubmit"] = f"{ml.memex_command()} hook prompt"
     hooks["SessionEnd"] = f"{ml.memex_command()} hook session-end --agent {agent}"
     return hooks

@@ -90,7 +90,7 @@ class Sandbox(unittest.TestCase):
                              f'[includeIf "gitdir:{cls.tmp}/"]\n\tpath = {cls.tmp}/gitconfig-inc\n')
         (cls.tmp / "gitconfig-inc").write_text("[user]\n\temail = included@example.com\n")
         env = {k: v for k, v in os.environ.items()
-               if not k.startswith(("GIT_", "MEMEX_", "CLAUDE_")) and k not in ("HERMES_WRITE_SAFE_ROOT",)}
+               if not k.startswith(("GIT_", "MEMEX_", "CLAUDE_")) and k not in ("HERMES_WRITE_SAFE_ROOT", "CODEX_HOME")}
         env.update({"HOME": str(cls.home), "GIT_CONFIG_GLOBAL": str(gitconfig), "GIT_CONFIG_NOSYSTEM": "1",
                     "PATH": f"{cls.home}/.local/bin:{os.environ['PATH']}"})
         cls.env = env
@@ -905,6 +905,28 @@ class TestSessions(Sandbox):
         self.assertEqual(self.hook("prompt", {**ask, "session_id": "s2"}).stdout, "")  # shown at start already
         self.assertEqual(self.git("check-ignore", "-q", ".memex/shown/s2").returncode, 0)  # machine-local
 
+    def test_codex_prompt_event_uses_shared_recall_and_limits(self):
+        made = []
+        for name in ("Invoice Backoff", "Invoice Retry", "Invoice Calendar"):
+            p = self.V / f"wiki/engineering/concepts/{name}.md"
+            p.write_text(f"---\ntype: concept\nstatus: active\nsummary: {name}.\n---\n")
+            made.append(p)
+        try:
+            payload = {"session_id": "codex-prompt", "turn_id": "turn-1", "hook_event_name": "UserPromptSubmit",
+                       "cwd": str(self.repo), "prompt": "Compare Invoice Backoff, Invoice Retry and Invoice Calendar"}
+            out = self.hook("prompt", payload, "codex")
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertIn("## Memex: pages that match this request", out.stdout)
+            self.assertEqual(out.stdout.count("- [["), 2)
+            again = self.hook("prompt", {**payload, "turn_id": "turn-2"}, "codex").stdout
+            self.assertNotEqual(out.stdout, again)  # unseen third page can arrive; shown pages cannot repeat
+            first_pages = set(re.findall(r"\[\[([^\]]+)\]\]", out.stdout))
+            self.assertFalse(first_pages & set(re.findall(r"\[\[([^\]]+)\]\]", again)))
+            self.assertEqual(self.hook("prompt", {**payload, "cwd": str(self.V)}, "codex").stdout, "")
+        finally:
+            for p in made:
+                p.unlink()
+
     def test_audit_measures_use_retrieval_rediscovery_and_trend(self):
         proj = self.tmp / "cc-projects" / "-code-payments-api"
         proj.mkdir(parents=True, exist_ok=True)
@@ -927,7 +949,7 @@ class TestSessions(Sandbox):
         cap = "memex capture --title \"Invoice timezone bug fixed by UTC\" --domain engineering --why w <<'EOF'\nx\nEOF"
         session("a.jsonl", "sess-a", str(self.repo), [
             ("memex search refund window", "No matches for 'refund window' in wiki, inbox/. Try synonyms"),
-            ('memex read "Payments API"', "<!-- wiki/engineering/systems/Payments API.md -->\nbody"),
+            ('memex read "Payments API"', "<!-- wiki/engineering/systems/Payments API.md -->\nbody " + FAKE_KEY),
             (cap, "inbox/2026-09-30 Invoice timezone bug fixed by UTC.md")],
             recall="## Memex: what the owner's knowledge base says about `payments-api`\n- [[Payments API]] (system): x")
         session("b.jsonl", "sess-b", str(self.repo), [
@@ -959,6 +981,8 @@ class TestSessions(Sandbox):
             listed = self.memex("audit", "--since", "2026-09-30", "--until", "2026-09-30", "--lookups", env=env).stdout
             self.assertIn("a.jsonl · tool sess-a-t0\n$ memex search refund window\nNo matches", listed)
             self.assertNotIn("capture", listed)  # lookups only
+            self.assertNotIn(FAKE_KEY, listed)
+            self.assertIn("REDACTED", listed)
         finally:
             for p in (bench, record, report):
                 if p.exists():
@@ -1389,6 +1413,136 @@ class TestUninstall(Sandbox):
         self.assertEqual(self.leftovers(v3).returncode, 0)
 
 
+class TestAuditAdapters(unittest.TestCase):
+    """Small parser fixtures: no installed agents, model calls or real transcripts."""
+
+    def setUp(self):
+        sys.path.insert(0, str(SRC / "tools"))
+        import audit
+        self.audit = audit
+        self.tmp = Path(tempfile.mkdtemp(prefix="memex-audit-test-"))
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def fixture(self, calls, extra=(), name="codex.jsonl", sid="same-session"):
+        lines = [{"type": "session_meta", "timestamp": "2026-09-30T10:00:00Z",
+                  "payload": {"id": sid, "cwd": str(self.tmp / "code")}}]
+        for i, (tool, args, output) in enumerate(calls):
+            lines.append({"type": "response_item", "timestamp": f"2026-09-30T10:{i + 1:02d}:00Z",
+                          "payload": {"type": "custom_tool_call" if tool == "exec" else "function_call",
+                                      "name": tool, "call_id": f"t{i}", "input": args} if tool == "exec" else
+                          {"type": "function_call", "name": tool, "call_id": f"t{i}", "arguments": json.dumps(args)}})
+            if output is not None:
+                lines.append({"type": "response_item", "timestamp": f"2026-09-30T10:{i + 1:02d}:01Z",
+                              "payload": {"type": "function_call_output", "call_id": f"t{i}", "output": output}})
+        lines += list(extra)
+        path = self.tmp / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(l) + "\n" for l in lines))
+        return path
+
+    def measured(self, path):
+        s = self.audit.parse(path, "codex")
+        s.update(kind="work", tools_unique=s["tools"], usage_unique=s["usage"])
+        return s, self.audit.measure([s], self.tmp)
+
+    def test_codex_direct_calls_and_modern_usage(self):
+        extra = [
+            {"type": "response_item", "payload": {"type": "message", "role": "developer", "content": [
+                {"type": "input_text", "text": "## Memex: pages that match this request\n- [[Payments API]]"}]}},
+            {"type": "token_usage_record", "timestamp": "2026-09-30T10:05:00Z", "payload": {
+                "response_id": "r1", "usage": {"input_tokens": 100, "cached_input_tokens": 80,
+                                                "output_tokens": 10, "reasoning_output_tokens": 4}}},
+            {"type": "event_msg", "payload": {"type": "token_count", "info": {
+                "total_token_usage": {"input_tokens": 9999, "output_tokens": 999}}}},
+        ]
+        s, m = self.measured(self.fixture([
+            ("exec_command", {"cmd": "memex search invoice"}, "No matches for 'invoice'"),
+            ("shell", {"command": ["bash", "-lc", 'memex read "Payments API"']}, "page"),
+            ("exec_command", {"cmd": "memex capture --title 'Invoice UTC fix'"}, "inbox/Invoice UTC fix.md\n"),
+        ], extra))
+        self.assertEqual((m["sessions"], m["queries"], m["reads"], m["captures"]), (1, 1, 1, 1))
+        self.assertEqual((m["zero_hit_pct"], m["search_then_read_sessions"], m["recall_opened_pct"]), (100.0, 1, 100.0))
+        self.assertEqual(s["usage"]["r1"]["in"], 100)  # cached tokens already included
+        self.assertEqual(s["usage"]["r1"]["out"], 10)  # reasoning already included
+
+    def test_codex_code_mode_bundles_and_capture_outcomes(self):
+        code = "; ".join("await tools.exec_command({cmd:" + json.dumps(cmd) + "})" for cmd in (
+            "memex search retry", 'memex read "Payments API"; memex read "Retry Budget"',
+            'memex capture --title "Retry jitter fixed"'))
+        output = json.dumps([{"output": "No matches for retry"}, {"output": "page"},
+                             {"output": "inbox/Retry jitter fixed.md\n", "exit_code": 0}])
+        _, m = self.measured(self.fixture([("exec", code, [{"type": "text", "text": output}])]))
+        self.assertEqual((m["queries"], m["reads"], m["captures"], m["search_then_read_sessions"]), (1, 2, 1, 1))
+        self.assertEqual(m["captures_per_read"], 0.5)
+        _, m = self.measured(self.fixture([
+            ("exec_command", {"cmd": "memex capture --title 'Refused capture'"}, "capture refused: Memex may already have this"),
+            ("exec_command", {"cmd": "memex capture --title 'Failed capture'"}, "permission denied"),
+            ("exec_command", {"cmd": "memex capture --title 'Pending capture'"}, None),
+        ]))
+        self.assertEqual((m["captures"], m["gate_refusals"], m["incomplete_memex_calls"], m["unconfirmed_captures"]), (0, 1, 1, 1))
+
+    def test_codex_async_result_is_attached_to_original_call(self):
+        _, m = self.measured(self.fixture([
+            ("exec_command", {"cmd": "memex capture --title 'Finished capture'"},
+             json.dumps({"session_id": 42, "output": "", "exit_code": None})),
+            ("write_stdin", {"session_id": 42, "chars": ""},
+             json.dumps({"output": "inbox/Finished capture.md\n", "exit_code": 0})),
+        ]))
+        self.assertEqual((m["captures"], m["incomplete_memex_calls"]), (1, 0))
+
+    def test_codex_legacy_usage_deltas_not_cumulative_sum(self):
+        extra = [{"type": "event_msg", "timestamp": f"2026-09-30T10:0{i}:00Z", "payload": {
+            "type": "token_count", "info": {"total_token_usage": {"input_tokens": inp, "output_tokens": out}}}}
+                 for i, (inp, out) in enumerate(((100, 10), (100, 10), (180, 30)))]
+        s, _ = self.measured(self.fixture([], extra))
+        self.assertEqual(sum(u["in"] for u in s["usage"].values()), 180)
+        self.assertEqual(sum(u["out"] for u in s["usage"].values()), 30)
+
+    def test_audit_discovery_resume_agent_namespaces_and_coverage(self):
+        from unittest.mock import patch
+        codex = self.tmp / "codex-home"
+        original = self.fixture([("exec_command", {"cmd": "memex search retry"}, "No matches for retry")],
+                                name="codex-home/sessions/a.jsonl")
+        resumed = codex / "archived_sessions/resumed.jsonl"
+        resumed.parent.mkdir(parents=True)
+        resumed.write_text(original.read_text())
+        (codex / "sessions/unknown.jsonl").write_text('{"unknown": 1}\n')
+        (codex / "sessions/changed-shape.jsonl").write_text(json.dumps({
+            "type": "event_msg", "payload": {"type": "token_count", "info": "unsupported shape"}}) + "\n")
+        original.write_text(original.read_text() + 'not-json\n')
+        claude = self.tmp / "claude"
+        claude.mkdir()
+        (claude / "a.jsonl").write_text("\n".join(json.dumps(x) for x in [
+            {"type": "assistant", "sessionId": "same-session", "cwd": str(self.tmp / "code"),
+             "timestamp": "2026-09-30T10:00:00Z", "message": {"content": [
+                 {"type": "tool_use", "id": "t0", "name": "Bash", "input": {"command": "memex search retry"}}]}},
+            {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t0", "content": "No matches for retry"}]}},
+        ]))
+        coverage = {}
+        with patch.dict(os.environ, {"CODEX_HOME": str(codex), "MEMEX_TRANSCRIPTS": str(claude), "MEMEX_CODEX_TRANSCRIPTS": ""}):
+            ss = self.audit.load(self.tmp / "vault", self.audit.ts("2026-09-30"), self.audit.ts("2026-10-01"), coverage)
+        m = self.audit.measure(ss, self.tmp)
+        self.assertEqual((m["sessions"], m["queries"]), (2, 2))
+        self.assertEqual((coverage["unsupported"], coverage["parse_warnings"]), (2, 1))
+        self.assertEqual(len(ss), 3)  # two Codex transcript copies, one logical session
+
+    def test_prompt_hook_upgrade_and_removal_preserve_unrelated_handlers(self):
+        import integrate
+        unrelated = {"hooks": [{"type": "command", "command": "owner-policy"}]}
+        hooks = {"UserPromptSubmit": [unrelated]}
+        previous = integrate.merge_hooks(hooks, [], integrate.CODEX_MATCHER, "codex")
+        integrate.merge_hooks(hooks, previous, integrate.CODEX_MATCHER, "codex")
+        prompt = hooks["UserPromptSubmit"]
+        self.assertEqual(len(prompt), 2)
+        self.assertEqual(prompt[0], unrelated)
+        self.assertIn("hook prompt", prompt[1]["hooks"][0]["command"])
+        self.assertEqual(hooks["SessionEnd"][0]["hooks"][0]["timeout"], 3)
+        integrate.merge_hooks(hooks, previous, integrate.CODEX_MATCHER, "codex", remove=True)
+        self.assertEqual(hooks, {"UserPromptSubmit": [unrelated]})
+
+
 class TestSkills(unittest.TestCase):
     """Skills and docs must only use commands and flags that exist (no sandbox needed)."""
 
@@ -1435,6 +1589,7 @@ class TestIntegration(Sandbox):
         self.assertEqual(hooks["SessionEnd"][0]["hooks"][0]["timeout"], 10)
         codex_hooks = json.loads((self.home / ".codex/hooks.json").read_text())["hooks"]
         self.assertIn("hook session-end --agent codex", codex_hooks["SessionEnd"][0]["hooks"][0]["command"])
+        self.assertIn("hook prompt", codex_hooks["UserPromptSubmit"][0]["hooks"][0]["command"])
         self.assertEqual(codex_hooks["SessionEnd"][0]["hooks"][0]["timeout"], 3)
         self.assertEqual(codex_hooks["SessionStart"][0]["hooks"][0]["timeout"], 10)
         self.assertEqual(codex_hooks["PreToolUse"][0]["hooks"][0]["timeout"], 15)
@@ -1448,7 +1603,7 @@ class TestIntegration(Sandbox):
         self.assertEqual([len(hooks[e]) for e in ("PreToolUse", "SessionStart", "SessionEnd")], [1, 1, 1])
         self.assertEqual(hooks["SessionEnd"][0]["hooks"][0]["timeout"], 10)
         codex_hooks = json.loads((self.home / ".codex/hooks.json").read_text())["hooks"]
-        self.assertEqual([len(codex_hooks[e]) for e in ("PreToolUse", "SessionStart", "SessionEnd")], [1, 1, 1])
+        self.assertEqual([len(codex_hooks[e]) for e in ("PreToolUse", "SessionStart", "SessionEnd", "UserPromptSubmit")], [1, 1, 1, 1])
         self.assertEqual(codex_hooks["SessionEnd"][0]["hooks"][0]["timeout"], 3)
 
     def test_codex_session_end_within_timeout(self):

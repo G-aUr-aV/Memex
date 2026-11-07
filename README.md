@@ -192,7 +192,7 @@ $ memex doctor
 
 ## Automatic memory
 
-Two global hooks, installed by setup for Claude Code and Codex, close the loop without anyone asking:
+Three global hooks, installed by setup for Claude Code and Codex, close the loop without anyone asking:
 
 ```mermaid
 sequenceDiagram
@@ -215,6 +215,13 @@ sequenceDiagram
 - **Session ledger at session end**:
   - records which session ran where, without a model call and in well under a second;
   - skips vault sessions and the folders listed in `harvest.exclude`.
+- **Recall on each prompt**: the same `UserPromptSubmit` handler in Claude Code and Codex offers up to
+  two relevant compiled pages and suppresses pages already shown in that session. Codex requires review
+  of new hook definitions in `/hooks`; setup preserves that trust boundary.
+- **`memex audit`** reads both agents' local transcripts, with combined and per-agent metrics. Codex direct
+  shell calls, code-mode wrappers, asynchronous results and token usage are normalized without executing
+  transcript text. Coverage and incomplete calls are reported; token shares are estimates. See
+  [Claude Code and Codex parity](docs/Codex%20Parity.md) for the implementation and validation plan.
 - **`/harvest`**:
   - writes a digest of each worthwhile session. The digest is each turn's prompt and the agent's answer, plus the files, commands and commits, all extracted verbatim from the transcript with secrets redacted, never summarized;
   - files it as a raw source and compiles only what lasts: root causes, decisions, gotchas, commands that worked, your stated preferences;

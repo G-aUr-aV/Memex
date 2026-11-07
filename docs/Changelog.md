@@ -7,6 +7,7 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 
 ## Unreleased: 0.3.0, framework and vault split
 ### Fixed
+- **Codex memory parity:** install the shared prompt-recall hook for Codex as well as Claude Code, preserving exact hook trust review, the two-page budget, session suppression and the three-second SessionEnd timeout. `memex audit` now reads both agents' transcripts, including Codex code-mode and asynchronous calls, reports combined/per-agent metrics and coverage, and avoids counting resumed history, cached tokens or cumulative usage twice. Lookup excerpts are redacted; incomplete captures are not credited as writes. Combined-agent trends use a new record version.
 - Keep the Python 3.9 Linux CI job on Ubuntu 24.04: `ubuntu-latest` moved to Ubuntu 26.04, where `setup-python` cannot install Python 3.9. Python 3.12 still tests `ubuntu-latest`; both Python versions continue to test macOS.
 - Reconciled the independently added `/auto-inbox` workflows: retain full-inbox context, interrupted-run recovery and `/verify` coordination while preserving scoped commits and unrelated staged or unstaged changes. Recovery is checked before exiting for an empty inbox; review-only runs never file or commit recovery candidates.
 - Codex's global `SessionEnd` hook now requests its supported 3-second timeout instead of 10 seconds, removing the timeout-clamping warning. Setup refreshes existing installations with the corrected value; other hook timeouts are unchanged.

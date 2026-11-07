@@ -3,7 +3,7 @@
 
   memex audit [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--days N] [--json] [--lookups] [--report] [--record]
 
-Reads Claude Code transcripts (~/.claude/projects, or $MEMEX_TRANSCRIPTS) and the vault. It reports deterministic
+Reads Claude Code and Codex transcripts and the vault. It reports deterministic
 measures for agent sessions outside the vault and the framework:
 - use: lookups, captures, the duplicate gate;
 - retrieval: zero-hit and partial-only queries, follow-up reads;
@@ -19,7 +19,7 @@ It's read-only except for:
 - `--record`, which appends the key numbers to `.memex/audit.jsonl` (machine-local), so the next audit shows the trend.
 
 Whether a lookup actually helped needs a reader. `--lookups` lists every lookup with its output, for the /audit
-skill to sample and judge. Codex transcripts aren't read yet.
+skill to sample and judge. Transcript adapters are best-effort; coverage and incomplete results are reported.
 """
 import argparse
 import datetime
@@ -33,8 +33,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import memexlib as ml  # noqa: E402
 import memex as mx  # noqa: E402
+import audit_codex  # noqa: E402
+from secretscan import redact  # noqa: E402
 
-MEMEX_CMD = re.compile(r"(?:^|[\s;&|(`'\"])(?:memex|memex\.py['\"]?)\s+([a-z][\w-]*)")
+MEMEX_CMD = re.compile(r"(?:^|[\s/;&|(`'\"])(?:memex|memex\.py['\"]?)\s+([a-z][\w-]*)")
 CHARS_PER_TOKEN_TOOL, CHARS_PER_TOKEN_PROSE = 2.4, 3.2  # calibrated on tool results; prose estimated
 KEYS = ("sessions", "lookup_pct", "capture_pct", "captures", "reads", "captures_per_read", "zero_hit_pct",
         "partial_only_pct", "recall_opened_pct", "recaptured", "gate_refusals", "memex_token_pct",
@@ -44,7 +46,7 @@ KEYS = ("sessions", "lookup_pct", "capture_pct", "captures", "reads", "captures_
 def ts(s):
     try:
         return datetime.datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
-    except ValueError:
+    except (ValueError, TypeError):
         return None
 
 
@@ -60,21 +62,33 @@ def text_of(content) -> str:
     return "\n".join(out)
 
 
-def transcripts_root() -> Path:
-    return Path(os.environ.get("MEMEX_TRANSCRIPTS") or Path.home() / ".claude" / "projects")
+def transcript_roots():
+    codex = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+    roots = [("claude", Path(os.environ.get("MEMEX_TRANSCRIPTS") or Path.home() / ".claude/projects"))]
+    override = os.environ.get("MEMEX_CODEX_TRANSCRIPTS")
+    roots += [("codex", Path(override))] if override else [("codex", codex / name)
+                                                        for name in ("sessions", "archived_sessions")]
+    return roots
 
 
-def parse(fn: Path) -> dict:
+def parse(fn: Path, agent="claude") -> dict:
     """One transcript: who, where, when, token usage per API call, tool calls with results, Memex hook output."""
-    s = {"file": str(fn), "subagent": "/subagents/" in str(fn), "sid": None, "cwd": None, "first": None,
-         "last": None, "usage": {}, "tools": [], "recall": "", "stall": False, "block_chars": 0}
+    if agent == "codex":
+        return audit_codex.parse(fn, ts, MEMEX_CMD)
+    s = {"agent": "claude", "file": str(fn), "subagent": "/subagents/" in str(fn), "sid": None,
+         "cwd": None, "first": None, "last": None, "usage": {}, "tools": [], "recall": "",
+         "stall": False, "block_chars": 0, "recognized": False, "warnings": []}
     uses, results = {}, {}
-    for line in open(fn, encoding="utf-8", errors="ignore"):
+    for line in audit_codex.lines(fn):
         try:
             d = json.loads(line)
         except ValueError:
+            s["warnings"].append("malformed JSON line")
+            continue
+        if not isinstance(d, dict):
             continue
         t, when = d.get("type"), ts(d["timestamp"]) if d.get("timestamp") else None
+        s["recognized"] |= t in ("user", "assistant", "attachment")
         if when:
             s["first"] = when if s["first"] is None else min(s["first"], when)
             s["last"] = when if s["last"] is None else max(s["last"], when)
@@ -82,10 +96,10 @@ def parse(fn: Path) -> dict:
         s["cwd"] = s["cwd"] or d.get("cwd")
         if t == "attachment":
             a = d.get("attachment") or {}
-            if a.get("type") == "hook_success" and str(a.get("hookName", "")).startswith("SessionStart"):
+            if a.get("type") == "hook_success" and str(a.get("hookName", "")).startswith(("SessionStart", "UserPromptSubmit")):
                 c = a.get("content") or ""
-                if "## Memex: what the owner's knowledge base says" in c:
-                    s["recall"] = c
+                if "## Memex: what the owner's knowledge base says" in c or "## Memex: pages that match this request" in c:
+                    s["recall"] += "\n" + c
                 if "Memex inbox looks stalled" in c:
                     s["stall"] = True
             elif a.get("type") == "instructions":
@@ -111,9 +125,11 @@ def parse(fn: Path) -> dict:
                     results[c.get("tool_use_id")] = {"rts": when, "text": text_of(c.get("content"))}
     for tid, u in uses.items():
         u.update(results.get(tid) or {"rts": None, "text": ""})
+        u["pending"] = tid not in results
         cmd = u["input"].get("command", "") if u["name"] == "Bash" else ""
         m = MEMEX_CMD.search(cmd) if cmd else None
         u["memex"] = m.group(1) if m else None
+        u["memex_ops"] = [m.group(1) for m in MEMEX_CMD.finditer(cmd)]
         u["cmd"] = cmd
         s["tools"].append(u)
     s["tools"].sort(key=lambda x: x["ts"] or 0)
@@ -125,31 +141,57 @@ def inside(path, root) -> bool:
     return p == r or p.startswith(r + os.sep)
 
 
-def load(v: Path, since: float, until: float):
-    root = transcripts_root()
-    files = [p for p in root.rglob("*.jsonl")] if root.exists() else []
+def load(v: Path, since: float, until: float, coverage=None):
+    coverage = coverage if coverage is not None else {}
+    coverage.update({"roots": [], "unreadable": 0, "unsupported": 0, "parse_warnings": 0})
     out = []
-    for fn in files:
-        if fn.stat().st_mtime < since:
-            continue  # untouched since before the window
-        s = parse(fn)
-        if not s["first"] or not (since <= s["first"] < until) or not s["cwd"]:
-            continue
-        if inside(s["cwd"], v):
-            s["kind"] = "vault"
-        elif inside(s["cwd"], ml.FRAMEWORK):
-            s["kind"] = "framework"
-        else:
-            s["kind"] = "work"
-        out.append(s)
+    seen_files = set()
+    for agent, root in transcript_roots():
+        coverage["roots"].append({"agent": agent, "path": str(root), "exists": root.is_dir()})
+        for fn in root.rglob("*.jsonl") if root.is_dir() else []:
+            key = (agent, str(fn.resolve()))
+            if key in seen_files:
+                continue
+            seen_files.add(key)
+            try:
+                if fn.stat().st_mtime < since:
+                    continue
+                s = parse(fn, agent)
+            except OSError:
+                coverage["unreadable"] += 1
+                continue
+            except (ValueError, TypeError, KeyError, AttributeError):
+                coverage["unsupported"] += 1
+                continue  # a changed transcript shape cannot break the rest of the audit
+            coverage["parse_warnings"] += len(s["warnings"])
+            if not s["recognized"]:
+                coverage["unsupported"] += 1
+                continue
+            if s["first"] is None or not (since <= s["first"] < until) or not isinstance(s["cwd"], str):
+                continue
+            if inside(s["cwd"], v):
+                s["kind"] = "vault"
+            elif inside(s["cwd"], ml.FRAMEWORK):
+                s["kind"] = "framework"
+            else:
+                s["kind"] = "work"
+            out.append(s)
     out.sort(key=lambda s: s["first"])
     seen_tools, seen_msgs = set(), set()  # resumed and forked sessions copy history into new files
     for s in out:
-        s["tools_unique"] = [t for t in s["tools"] if t["id"] not in seen_tools]
-        seen_tools |= {t["id"] for t in s["tools"]}
-        s["usage_unique"] = {k: u for k, u in s["usage"].items() if k not in seen_msgs}
-        seen_msgs |= set(s["usage"])
+        s["tools_unique"] = [t for t in s["tools"] if (s["agent"], t["id"]) not in seen_tools]
+        seen_tools |= {(s["agent"], t["id"]) for t in s["tools"]}
+        s["usage_unique"] = {k: u for k, u in s["usage"].items() if (s["agent"], k) not in seen_msgs}
+        seen_msgs |= {(s["agent"], k) for k in s["usage"]}
     return out
+
+
+def operations(tool):
+    return tool.get("memex_ops") or ([tool["memex"]] if tool.get("memex") else [])
+
+
+def session_key(s):
+    return s.get("agent", "claude"), s["sid"] or s["file"]
 
 
 def title_of(cmd: str) -> str:
@@ -166,28 +208,28 @@ def measure(sessions, v: Path) -> dict:
     main = {}
     for s in work:
         if not s["subagent"]:
-            main.setdefault(s["sid"] or s["file"], []).append(s)
+            main.setdefault(session_key(s), []).append(s)
     calls = [(s, t) for s in work for t in s["tools_unique"] if t["memex"]]
-    looked = {sid for sid, ss in main.items() if any(t["memex"] in ("search", "read") for s in ss for t in s["tools"])}
-    captured = {sid for sid, ss in main.items() if any(t["memex"] == "capture" for s in ss for t in s["tools"])}
-    caps = [(s, t) for s, t in calls if t["memex"] == "capture"]
+    looked = {sid for sid, ss in main.items() if any(set(operations(t)) & {"search", "read"} for s in ss for t in s["tools"])}
+    captured = {sid for sid, ss in main.items() if any("capture" in operations(t) for s in ss for t in s["tools"])}
+    caps = [(s, t) for s, t in calls if "capture" in operations(t)]
     refused = [x for x in caps if "capture refused: Memex may already have this" in x[1]["text"]]
-    written = [x for x in caps if x not in refused and "capture refused" not in x[1]["text"]]
-    searches = [(s, t) for s, t in calls if t["memex"] == "search"]
-    reads = [(s, t) for s, t in calls if t["memex"] == "read"]
-    queries = sum(len(re.findall(r"memex(?:\.py['\"]?)?\s+search", t["cmd"])) for _, t in searches)
+    written = [x for x in caps if not x[1].get("pending") and re.search(r"(?m)^inbox/[^\n]+\.md\s*$", x[1]["text"])]
+    searches = [(s, t) for s, t in calls if "search" in operations(t)]
+    reads = [(s, t) for s, t in calls if "read" in operations(t)]
+    queries = sum(operations(t).count("search") for _, t in searches)
     zero = sum(t["text"].count("No matches for") for _, t in searches)
     partial = sum(t["text"].count("no page has every term") for _, t in searches)
-    followed = sum(1 for ss in main.values() for s in ss
-                   if any(t["memex"] == "search" for t in s["tools"]) and any(
-                       t["memex"] == "read" and t["ts"] and t["ts"] > min(x["ts"] or 0 for x in s["tools"] if x["memex"] == "search")
-                       for t in s["tools"]))
+    followed = 0
+    for ss in main.values():
+        ops = [op for s in ss for t in s["tools_unique"] for op in operations(t)]
+        followed += "search" in ops and "read" in ops[ops.index("search") + 1:]
     # recall: did the session open a page it was given?
-    recalled = [s for ss in main.values() for s in ss if s["recall"]]
+    recalled = [ss for ss in main.values() if any(s["recall"] for s in ss)]
     opened = 0
-    for s in recalled:
-        pages = set(re.findall(r"\[\[([^\]]+)\]\]", s["recall"]))
-        asked = " ".join(t["cmd"] for t in s["tools"] if t["memex"] in ("read", "search"))
+    for ss in recalled:
+        pages = set(re.findall(r"\[\[([^\]]+)\]\]", "\n".join(s["recall"] for s in ss)))
+        asked = " ".join(t["cmd"] for s in ss for t in s["tools"] if set(operations(t)) & {"read", "search"})
         opened += any(p in asked for p in pages)
     # re-discovery: a capture whose title says what an earlier capture (from another session) already said
     recaptured, clusters = 0, {}
@@ -197,17 +239,17 @@ def measure(sessions, v: Path) -> dict:
             continue
         title = title_of(t["cmd"])
         words = mx.content_words(title)
-        hit = next((e for e in earlier if e[1] != s["sid"] and words and len(words & e[0]) / len(words) >= 0.6), None)
+        hit = next((e for e in earlier if e[1] != session_key(s) and words and len(words & e[0]) / len(words) >= 0.6), None)
         if hit:
             recaptured += 1
             clusters[hit[2]] = clusters.get(hit[2], 1) + 1
-        earlier.append((words, s["sid"], title))
+        earlier.append((words, session_key(s), title))
     # cost (tokens): Memex text in context is re-read by every later API call in the same transcript
     total_in = sum(u["in"] for s in work for u in s["usage_unique"].values())
     total_out = sum(u["out"] for s in work for u in s["usage_unique"].values())
     memex_in = memex_out = 0.0
     for s in work:
-        calls_ts = sorted(u["ts"] or 0 for u in s["usage"].values())
+        calls_ts = sorted(u["ts"] or 0 for u in s["usage_unique"].values())
         n = len(calls_ts)
         memex_in += (s["block_chars"] + len(s["recall"])) / CHARS_PER_TOKEN_PROSE * n
         for t in s["tools_unique"]:
@@ -224,14 +266,18 @@ def measure(sessions, v: Path) -> dict:
         if prev and 0 <= t["ts"] - max(prev) < 600:
             gaps.append(t["ts"] - max(prev))
     n_main = len(main)
+    capture_count = sum(len(re.findall(r"(?m)^inbox/[^\n]+\.md\s*$", t["text"])) for _, t in written)
+    read_count = sum(operations(t).count("read") for _, t in reads)
     return {
         "sessions": n_main, "transcripts": len(work),
-        "vault_sessions": len({s["sid"] for s in sessions if s["kind"] == "vault" and not s["subagent"]}),
+        "vault_sessions": len({session_key(s) for s in sessions if s["kind"] == "vault" and not s["subagent"]}),
         "lookup_sessions": len(looked), "lookup_pct": pct(len(looked), n_main),
         "capture_sessions": len(captured), "capture_pct": pct(len(captured), n_main),
         "capture_only_sessions": len(captured - looked),
-        "captures": len(written), "gate_refusals": len(refused), "searches": len(searches), "queries": queries,
-        "reads": len(reads), "captures_per_read": round(len(written) / len(reads), 1) if reads else None,
+        "captures": capture_count,
+        "gate_refusals": sum(t["text"].count("capture refused: Memex may already have this") for _, t in refused),
+        "searches": len(searches), "queries": queries, "reads": read_count,
+        "captures_per_read": round(capture_count / read_count, 1) if read_count else None,
         "zero_hit_pct": pct(zero, queries), "partial_only_pct": pct(partial, queries),
         "search_then_read_sessions": followed,
         "recall_sessions": len(recalled), "recall_opened_pct": pct(opened, len(recalled)),
@@ -241,6 +287,9 @@ def measure(sessions, v: Path) -> dict:
         "memex_token_pct": pct(memex_in, total_in), "memex_output_pct": pct(memex_out, total_out),
         "capture_seconds_median": round(statistics.median(gaps), 1) if gaps else None,
         "capture_minutes_total": round(sum(gaps) / 60, 1),
+        "incomplete_memex_calls": sum(bool(t.get("pending")) for _, t in calls),
+        "unconfirmed_captures": sum(x not in written and x not in refused and not x[1].get("pending") for x in caps),
+        "sessions_without_usage": sum(not any(s["usage"] for s in ss) for ss in main.values()),
     }
 
 
@@ -296,7 +345,7 @@ def previous(v: Path, window: str):
             rows.append(json.loads(line))
         except ValueError:
             pass
-    rows = [r for r in rows if r.get("window") != window]
+    rows = [r for r in rows if r.get("window") != window and r.get("schema_version") == 2]
     return rows[-1] if rows else None
 
 
@@ -337,6 +386,17 @@ def render(r: dict) -> str:
             f"of output tokens: ≈{val(m['memex_output_pct'], '%')}",
             f"- Time spent writing captures: median {val(m['capture_seconds_median'], ' s')} each, "
             f"{m['capture_minutes_total']} min in total",
+            "", "## Agent coverage",
+            *[f"- {agent}: {metrics['sessions']} work sessions, {metrics['queries']} search queries, "
+              f"{metrics['reads']} reads, {metrics['captures']} captures, "
+              f"{metrics['incomplete_memex_calls']} incomplete Memex calls, "
+              f"{metrics['unconfirmed_captures']} unconfirmed captures, "
+              f"{metrics['sessions_without_usage']} sessions without token usage"
+              for agent, metrics in r.get("agents", {}).items()],
+            f"- Transcript coverage: {r.get('coverage', {}).get('unsupported', 0)} unsupported, "
+            f"{r.get('coverage', {}).get('unreadable', 0)} unreadable, "
+            f"{r.get('coverage', {}).get('parse_warnings', 0)} parse warnings. "
+            "Token shares and capture latency are estimates; incomplete results do not prove success.",
             "", "## Pipeline (now)",
             f"- Inbox: {h['inbox']} item(s)" + (f", STALLED since {h['inbox_stalled_since']}" if h["inbox_stalled_since"] else "")
             + (f"; {h['half_filed_raw']} raw file(s) filed but not committed" if h["half_filed_raw"] else "")
@@ -366,22 +426,26 @@ def main(argv=None):
     start = datetime.datetime.combine(since, datetime.time()).timestamp()
     end = datetime.datetime.combine(until + datetime.timedelta(days=1), datetime.time()).timestamp()
     window = f"{since.isoformat()}..{until.isoformat()}"
-    sessions = load(v, start, end)
+    coverage = {}
+    sessions = load(v, start, end, coverage)
     if a.lookups:
         for s in sessions:
             if s["kind"] != "work":
                 continue
             for t in s["tools_unique"]:
-                if t["memex"] in ("search", "read"):
+                if set(operations(t)) & {"search", "read"}:
                     when = datetime.datetime.fromtimestamp(t["ts"]).strftime("%Y-%m-%d %H:%M") if t["ts"] else "?"
-                    print(f"## {when} {Path(s['cwd']).name} · {s['file']} · tool {t['id']}\n$ {t['cmd'][:400]}\n"
-                          f"{t['text'][:1200]}\n")
+                    cmd, output = redact(t["cmd"])[0][:400], redact(t["text"])[0][:1200]
+                    excerpt = f"## {when} {s['agent']} {Path(s['cwd']).name} · {s['file']} · tool {t['id']}\n$ {cmd}\n{output}\n"
+                    print(redact(excerpt)[0])
         return 0
     m = measure(sessions, v)
     b = bench(v)
     m["bench_hit1"], m["bench_hit3"] = (b["hit1"], b["hit3"]) if b else (None, None)
     r = {"generated": today.isoformat(), "window": window, "metrics": m, "health": health(v), "bench": b,
-         "previous": previous(v, window)}
+         "previous": previous(v, window), "coverage": coverage,
+         "agents": {agent: measure([s for s in sessions if s["agent"] == agent], v)
+                    for agent in ("claude", "codex")}}
     if a.json:
         print(json.dumps(r, indent=2, default=str))
     else:
@@ -392,7 +456,8 @@ def main(argv=None):
         dest.write_text("---\ntype: audit-report\n---\n" + render(r) + "\n", encoding="utf-8")
         print(f"report written: {ml.rel(dest)}")
     if a.record:
-        line = {"date": today.isoformat(), "window": window, **{k: m.get(k) for k in KEYS}}
+        line = {"date": today.isoformat(), "window": window, "schema_version": 2,
+                "agent_coverage": ["claude", "codex"], **{k: m.get(k) for k in KEYS}}
         with open(v / ".memex" / "audit.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(line) + "\n")
         print("recorded in .memex/audit.jsonl")
