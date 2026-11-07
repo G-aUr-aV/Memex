@@ -122,11 +122,18 @@ HOT_STALE_DAYS = 7
 
 
 def half_filed(v: Path):
-    """New raw/ files that aren't committed yet: `memex file` ran but the run that filed them never finished."""
+    """New raw/ files that aren't committed yet: `memex file` ran but the run that filed them never finished. Code
+    snapshots are left out: they belong to a /verify run that commits them itself."""
     r = ml.git(v, "status", "--porcelain", "-z", "--untracked-files=all", "--", "raw")
     if r.returncode:
         return []
-    return [e[3:] for e in r.stdout.split("\0") if e.startswith("?? ") and e[3:].endswith(".md")]
+    out = []
+    for e in r.stdout.split("\0"):
+        if e.startswith("?? ") and e[3:].endswith(".md"):
+            fm, _ = frontmatter((v / e[3:]).read_text(encoding="utf-8", errors="ignore"))
+            if str(fm.get("source_type") or "") != "code-snapshot":
+                out.append(e[3:])
+    return out
 
 
 def session_context(rebuild=True) -> str:

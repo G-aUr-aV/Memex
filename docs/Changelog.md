@@ -28,6 +28,14 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 - **`/auto-inbox` skill** for scheduled runs: reviews every inbox capture for material value (`auto` · `review` · `no-material`), quick-ingests up to 10 clear keepers serially without asking, and leaves the rest in `inbox/` with a reason. It never deletes, switches to review-only when `wiki/` or `raw/` already has uncommitted changes, and starts its report with a one-line headline a scheduler can show. In Claude Code it runs on Claude Sonnet 5.5 at medium effort (`model:` and `effort:` frontmatter), whatever the session's model; other agents ignore those fields.
 - `memex ctx auto-inbox`: the whole inbox (no 20-item cap) plus the vault's uncommitted changes outside `inbox/`.
 
+### Changed: /verify checks what's due, not just the oldest 3
+- `memex ctx verify` marks a page **due** when it was never verified, changed after its last check, or was last checked over 30 days ago. Due pages are listed by exposure (playbooks, which recall shows first, then repo-tied pages), then by reason and age; pages that aren't due are summarised on one line.
+- `/verify` with no argument now checks the first 6 due pages (`all` or a number N also work) and does nothing when nothing is due, so unchanged pages aren't re-checked for the sake of it.
+- **Runs don't trample each other.**
+  - `/verify` stops with "SKIPPED: another vault run in progress" when `wiki/` or `raw/` has uncommitted changes.
+  - `/auto-inbox` stops with "SKIPPED: /verify in progress" when a code snapshot is uncommitted, instead of mistaking it for a half-filed capture.
+  - The session context's half-filed warning ignores code snapshots too.
+
 ### Added: task-aware recall, no source page per capture, upkeep helpers
 - **Prompt recall** (`memex hook prompt`, installed as Claude Code's `UserPromptSubmit` hook).
   - Each prompt can bring up to 2 compiled pages that it names (a title or alias phrase, or a single-word alias) or is clearly about. "Clearly about" means its words in the page's title, aliases and summary are rare among compiled pages: summed IDF ≥ 6.5, with 2+ words found in ≤2 pages.

@@ -1,7 +1,7 @@
 ---
 name: verify
 description: Check the wiki's current-state claims (system pages, playbooks, project pages) against the code they describe, read-only on the code. Records the evidence as a verbatim raw snapshot, strikes stale claims with a citation, refreshes summaries, fills verified_on and verified_at_commit, and reports. Use weekly, after big merges, when a page looks out of date, or when the owner says verify, check the wiki against the code, or is this page still true.
-argument-hint: "[page name | repo name] (default: the 3 pages verified longest ago)"
+argument-hint: "[page name | repo name | all | N] (default: the first 6 due pages)"
 allowed-tools: Bash(memex *)
 model: claude-sonnet-5-5
 effort: medium
@@ -10,7 +10,14 @@ effort: medium
 
 !`memex ctx verify`
 
-Target: $ARGUMENTS. A page name checks that page; a repo name checks every listed page for that repo. Otherwise take the first 3 pages above, which are the ones verified longest ago. Work without asking, then report.
+Target: $ARGUMENTS.
+- A page name checks that page; a repo name checks every listed page for that repo.
+- `all` checks every due page; a number N checks the first N due pages.
+- With no argument, check the first 6 **due** pages above. A page is due when it was never verified, changed since its last check, or was last checked over 30 days ago, and the list puts the pages sessions see most first. If nothing is due, say so and stop: no snapshot, no log, no commit.
+
+Work without asking, then report.
+
+**Preflight.** If the uncommitted changes listed above include anything under `wiki/` or `raw/`, another vault run (an inbox run) is mid-change. Stop and report `verify: SKIPPED: another vault run in progress`; the next run picks it up.
 
 The code repos are **read-only**. Never check out, switch, stash, pull, commit, reset, build or run tests in them, and never open `.env` files or secrets. Read other branches with `git -C <repo> show <ref>:<path>`, `git -C <repo> grep -n <pattern> <ref>` and `git -C <repo> log`. Follow the owner's own instructions about each repo, e.g. files they've said not to read.
 

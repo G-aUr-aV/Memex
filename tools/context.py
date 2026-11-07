@@ -137,8 +137,14 @@ def repo_paths():
     return paths
 
 
+VERIFY_STALE_DAYS, VERIFY_PER_RUN = 30, 6
+
+
 def verify(limit=40):
-    """Pages that state current facts about code, least recently verified first, plus where each repo is checked out."""
+    """Pages that state current facts about code, due ones first, plus where each repo is checked out. A page is due
+    when it was never verified, changed since it was verified, or was verified over VERIFY_STALE_DAYS ago. Due pages
+    are ordered by exposure (playbooks, which session-start recall shows first, then pages tied to a repo), then by
+    reason (never, changed, stale), then by age."""
     from memexlib import frontmatter, iter_files
     rows = []
     for p in iter_files(ROOT / "wiki", (".md",)):
@@ -151,12 +157,30 @@ def verify(limit=40):
         if str(fm.get("status") or "") in ("superseded", "archived") or not (kind == "system" or (repos and kind in (
                 "playbook", "project", "concept", "decision"))):
             continue
-        seen = str(fm.get("verified_on") or fm.get("verified") or "")
-        rows.append((seen or "0000", p.stem, kind, repos, seen or "never", str(fm.get("updated") or "?")))
+        seen, updated = str(fm.get("verified_on") or fm.get("verified") or ""), str(fm.get("updated") or "")
+        try:
+            age = (TODAY - datetime.date.fromisoformat(seen[:10])).days if seen else None
+        except ValueError:
+            age = None
+        if not seen:
+            reason, why = 0, "never verified"
+        elif updated[:10] > seen[:10]:
+            reason, why = 1, f"changed {updated[:10]}, after its last check on {seen[:10]}"
+        elif age is None or age > VERIFY_STALE_DAYS:
+            reason, why = 2, f"last checked {seen[:10]}" + (f", {age} days ago" if age is not None else "")
+        else:
+            reason, why = 9, f"current: checked {seen[:10]}"
+        exposure = 0 if kind == "playbook" else (1 if repos else 2)
+        rows.append((reason == 9, exposure, reason, seen or "0000", p.stem, kind, repos, why))
     rows.sort()
-    print(f"Pages with current-state claims about code: {len(rows)} (least recently verified first)")
-    for _, name, kind, repos, seen, updated in rows[:limit]:
-        print(f"- {name} ({kind}; repo: {', '.join(repos) or 'none set'}; verified: {seen}; updated: {updated})")
+    due = [r for r in rows if not r[0]]
+    print(f"Due for /verify: {len(due)} of {len(rows)} pages with current-state claims about code. A run without "
+          f"arguments takes the first {VERIFY_PER_RUN} due pages; `all` takes every due page.")
+    for _, _, _, _, name, kind, repos, why in due[:limit]:
+        print(f"- {name} ({kind}; repo: {', '.join(repos) or 'none set'}): DUE, {why}")
+    current = [r for r in rows if r[0]]
+    if current:
+        print("Current (not due):", ", ".join(f"{r[4]} ({r[7].split(': ', 1)[1]})" for r in current))
     paths = repo_paths()
     print("Local checkouts (from the session ledger):", *(f"- {k}: {v}" for k, v in sorted(paths.items())) or ["none"],
           sep="\n")
@@ -189,6 +213,7 @@ def main():
         harvest()
     elif what == "verify":
         verify()
+        pending_changes()
     elif what == "weekly":
         since = TODAY - datetime.timedelta(days=7)
         entries = log_entries(since=since)

@@ -880,10 +880,21 @@ class TestSessions(Sandbox):
         saved = ledger.read_text() if ledger.exists() else None
         try:
             self.hook("session-end", {"session_id": "verify-sess", "cwd": str(self.repo)}, "claude")
+            today = datetime.date.today().isoformat()
+            for name, updated, checked in (("Current Runbook", today, today), ("Changed Runbook", today, "2026-09-01")):
+                (self.V / f"wiki/engineering/playbooks/{name}.md").write_text(
+                    f"---\ntype: playbook\nstatus: active\napplies_to: [payments-api]\nupdated: {updated}\n"
+                    f"verified: {checked}\n---\nSteps.\n")
             out = self.memex("ctx", "verify").stdout
-            self.assertIn("- Payments API (system; repo: acme/payments-api; verified: never; updated: 2026-09-20)", out)
+            self.assertIn("Due for /verify: 2 of 3", out)
+            self.assertIn("- Changed Runbook (playbook; repo: payments-api): DUE, changed " + today, out)
+            self.assertIn("- Payments API (system; repo: acme/payments-api): DUE, never verified", out)
+            self.assertLess(out.index("Changed Runbook"), out.index("Payments API"))  # playbooks first
+            self.assertIn(f"Current (not due): Current Runbook (checked {today})", out)
             self.assertIn(f"- payments-api: {self.repo}", out)
         finally:
+            for name in ("Current Runbook", "Changed Runbook"):
+                (self.V / f"wiki/engineering/playbooks/{name}.md").unlink(missing_ok=True)
             if saved is None:
                 ledger.unlink(missing_ok=True)
             else:
@@ -892,12 +903,16 @@ class TestSessions(Sandbox):
     def test_half_filed_raw_is_reported(self):
         half = self.V / "raw/learning/2026-09-02 Half Filed.md"
         half.write_text("---\ntitle: Half Filed\n---\nx\n")
+        snap = self.V / "raw/learning/2026-09-02 Code check payments abc1234.md"  # a /verify run in progress
+        snap.write_text("---\ntitle: Code check\nsource_type: code-snapshot\n---\nx\n")
         try:
             ctx = self.memex("context").stdout
             self.assertIn("WARNING: 1 file(s) in raw/ are filed but not committed", ctx)
             self.assertIn("raw/learning/2026-09-02 Half Filed.md", ctx)
+            self.assertNotIn("Code check payments", ctx)
         finally:
             half.unlink()
+            snap.unlink()
         self.assertNotIn("filed but not committed", self.memex("context").stdout)
 
     def test_stall_alarm_only_when_no_commit_followed_a_waiting_capture(self):
