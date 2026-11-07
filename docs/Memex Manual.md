@@ -101,6 +101,8 @@ Already configured for you: links auto-update when files move, attachments go to
 
 Plain requests work too: "add this to Memex", "what do I know about X", "prep me for tomorrow's arch review". In Codex, skills start with `$` (`$ingest`).
 
+**Scheduled inbox ingestion:** create a local Codex scheduled job with the **vault** as its project (never the framework or a worktree copy). Set the desired cadence, such as every six hours, and use the prompt **Follow `.claude/skills/auto-inbox/SKILL.md`. Review the inbox and ingest eligible entries.** Keep the computer on and the app running. Test `/auto-inbox --review-only` in a vault session first. Material value is the admission test: explain which project, goal, question or reusable lesson an item serves and what supported knowledge it adds or corrects. Duplicates and transient live state without a durable lesson do not merit compilation. Automatic ingest retains citations and empty review fields; contradictions of reviewed claims, incomplete evidence and plans over 15 content pages wait for review. Entries are never deleted. The job uses `memex commit --only` for its own files plus generated indexes, preserving unrelated edits; untracked raw files left by an interrupted run can be resumed even with an empty inbox. Other existing wiki/raw work or an overlapping writer defers ingestion, and code snapshots from `/verify` are never treated as inbox recovery items.
+
 ### Any agent, any project
 | Agent | In the vault | From any other project | Set up by `setup.sh` |
 |---|---|---|---|

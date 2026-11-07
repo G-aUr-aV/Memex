@@ -370,9 +370,9 @@ def locked(v: Path):
         yield
 
 
-def commit(v: Path, message: str, force=False, check_lint=True, sync_remote=True) -> str:
-    """Rebuild the index, lint, and commit everything in the vault as the vault's identity. Then, if the owner
-    attached a private remote, push (a failed push never fails the commit)."""
+def commit(v: Path, message: str, force=False, check_lint=True, sync_remote=True, only=None) -> str:
+    """Rebuild, lint, and commit as the vault identity; optionally select files plus generated indexes.
+    Then, if the owner attached a private remote, push (a failed push never fails the commit)."""
     import remote
     v = Path(v).resolve()
     with locked(v):
@@ -384,6 +384,19 @@ def commit(v: Path, message: str, force=False, check_lint=True, sync_remote=True
         if remote.in_progress(v) == "rebase":
             raise VaultError("a rebase is in progress in the vault; run git rebase --abort, then memex pull")
         merging = remote.in_progress(v) == "merge"
+        selected = None
+        if only is not None:
+            if merging:
+                raise VaultError("--only cannot be used during a merge; commit the complete resolution")
+            if not only:
+                raise VaultError("--only needs at least one vault file")
+            selected = set()
+            for name in only:
+                path = v / name
+                if Path(name).is_absolute() or not ml.inside(path, v) or path.is_dir():
+                    raise VaultError(f"--only requires individual files inside the vault: {name}")
+                selected.add(path.relative_to(v).as_posix())
+            selected = sorted(selected | ml.generated(v))
         tool(v, "build_index.py")
         if check_lint:
             lint = tool(v, "lint.py", "--quick")
@@ -391,12 +404,19 @@ def commit(v: Path, message: str, force=False, check_lint=True, sync_remote=True
                 print(lint.stdout.strip())
                 raise VaultError("commit skipped: fix the lint errors above, then run memex commit again "
                                  "(--force only for errors you didn't cause)")
-        ml.git(v, "add", "-A", ".")
-        if ml.git(v, "diff", "--cached", "--quiet").returncode == 0 and not merging:
+        # Literal pathspecs prevent a filename from expanding to unrelated files.
+        pathspecs = [f":(literal){p}" for p in selected] if selected is not None else ["."]
+        added = ml.git(v, "add", "-A", "--", *pathspecs)
+        if added.returncode:
+            raise VaultError(f"git add failed:\n{(added.stdout + added.stderr).strip()}")
+        if ml.git(v, "diff", "--cached", "--quiet", "--", *pathspecs).returncode == 0 and not merging:
             result = "nothing to commit"
         else:
             msg = f"{message.strip()}\n\nMemex-Framework: {VERSION} ({ml.framework_sha()})\n"
-            c = ml.git(v, "commit", "-q", "-F", "-", env=identity_env(v), input=msg)
+            args = ["commit", "-q", "-F", "-"]
+            if selected is not None:
+                args += ["--only", "--", *pathspecs]
+            c = ml.git(v, *args, env=identity_env(v), input=msg)
             if c.returncode:
                 raise VaultError(f"git commit failed:\n{(c.stdout + c.stderr).strip()}\nNothing was pushed.")
             stat = ml.git(v, "show", "--stat", "--format=%h %s", "HEAD").stdout.strip().splitlines()
