@@ -41,6 +41,7 @@ Templates for every type: `meta/templates/wiki/`. Read the matching template bef
 - **Frontmatter** (required on every wiki page): `type, domain, status, summary, created, updated`. Usual: `aliases, tags, sources, confidence, reviewed`. `summary` is one line ≤160 chars and feeds the generated index, so make it specific. Leave `reviewed:` empty — only the owner fills it (with a date). `updated` = last real content change.
 - **Body**: `> [!summary]` → `> [!mine] My take` → content sections → `## Sources` → `---` → `## Timeline` (append-only `- YYYY-MM-DD | source | what changed`).
 - **Links**: `[[Page]]` on the first meaningful mention only; say why a connection matters. Never link a page that doesn't exist unless you create it in the same operation. Replace every template placeholder (`YYYY-MM-DD Source Title`, `Page`); lint fails on leftovers.
+- **Captures skip the source page.** A `source_type: capture` note (from `memex capture`) is compiled straight into its canonical pages, which cite its raw file. It gets a source page only when no compiled page fits it, or when it needs a redaction or embedded-instruction warning. Articles, meetings, transcripts, session digests and code snapshots keep theirs: one page per real source, not one per note.
 - **Reference pages** that compile no outside facts (e.g., `Glossary`, hub lists) may set `uncited_ok: true` to skip the citation check.
 - **Size**: split pages over ~200 lines. Keep `wiki/hot.md` ≤ 40 lines.
 

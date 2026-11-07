@@ -3,6 +3,8 @@ name: verify
 description: Check the wiki's current-state claims (system pages, playbooks, project pages) against the code they describe, read-only on the code. Records the evidence as a verbatim raw snapshot, strikes stale claims with a citation, refreshes summaries, fills verified_on and verified_at_commit, and reports. Use weekly, after big merges, when a page looks out of date, or when the owner says verify, check the wiki against the code, or is this page still true.
 argument-hint: "[page name | repo name] (default: the 3 pages verified longest ago)"
 allowed-tools: Bash(memex *)
+model: claude-sonnet-5-5
+effort: medium
 ---
 # /verify — wiki claims vs the code
 

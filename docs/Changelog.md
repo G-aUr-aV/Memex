@@ -28,6 +28,15 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 - **`/auto-inbox` skill** for scheduled runs: reviews every inbox capture for material value (`auto` · `review` · `no-material`), quick-ingests up to 10 clear keepers serially without asking, and leaves the rest in `inbox/` with a reason. It never deletes, switches to review-only when `wiki/` or `raw/` already has uncommitted changes, and starts its report with a one-line headline a scheduler can show. In Claude Code it runs on Claude Sonnet 5.5 at medium effort (`model:` and `effort:` frontmatter), whatever the session's model; other agents ignore those fields.
 - `memex ctx auto-inbox`: the whole inbox (no 20-item cap) plus the vault's uncommitted changes outside `inbox/`.
 
+### Added: task-aware recall, no source page per capture, upkeep helpers
+- **Prompt recall** (`memex hook prompt`, installed as Claude Code's `UserPromptSubmit` hook).
+  - Each prompt can bring up to 2 compiled pages that it names (a title or alias phrase, or a single-word alias) or is clearly about. "Clearly about" means its words in the page's title, aliases and summary are rare among compiled pages: summed IDF ≥ 6.5, with 2+ words found in ≤2 pages.
+  - Pasted blocks, URLs, path prefixes, package names and generic words are ignored, and a page a session was already shown (at start or earlier) never repeats.
+  - On 70 real first prompts it offered pages for 28, all on topic, and nothing for prompts with no matching page. It takes about 20 ms. `recall.prompt: false` turns it off.
+- **Captures skip the source page.** Schema, `/ingest` and `/auto-inbox`: a `source_type: capture` note is compiled straight into its canonical pages, which cite its raw file. It gets a source page only when no compiled page fits, or for redaction or embedded-instruction warnings; real sources keep theirs. Before this, 108 source pages sat against 18 compiled pages, and 77 of them were near-copies.
+- **`memex harvest --skip-captured`** marks sessions that already ran `memex capture` as skipped, so `/harvest` covers the sessions that captured nothing. `/harvest` runs it first.
+- **`/verify`** is pinned to Sonnet 5.5 at medium effort in Claude Code, like `/auto-inbox`, for cheap scheduled runs.
+
 ### Added: `memex audit` and `/audit`, so "is Memex helping?" has numbers
 - **`memex audit`** (`tools/audit.py`) reads Claude Code transcripts (`~/.claude/projects`, or `$MEMEX_TRANSCRIPTS`) and the vault for a window (`--days N`, default 14, or `--since`/`--until`). It reports, for sessions outside the vault and the framework:
   - use: % of sessions that looked up or captured, captures written vs refused by the duplicate gate, captures per full read;

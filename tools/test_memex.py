@@ -170,6 +170,8 @@ class TestVaultLayout(Sandbox):
         global_hook = json.loads((self.home / ".claude/settings.json").read_text())["hooks"]["PreToolUse"][0]["hooks"][0]
         self.assertEqual(vault_hook["command"], global_hook["command"])  # identical, so Claude Code runs it once
         self.assertIn(str(self.fw / "hooks" / "guard.py"), vault_hook["command"])
+        hooks = json.loads((self.home / ".claude/settings.json").read_text())["hooks"]
+        self.assertTrue(hooks["UserPromptSubmit"][0]["hooks"][0]["command"].endswith("hook prompt"))
         json.loads((self.V / ".codex/hooks.json").read_text())
 
     def test_domain_folders_and_indexes(self):
@@ -778,6 +780,19 @@ class TestSessions(Sandbox):
         finally:
             book.unlink()
 
+    def test_prompt_hook_names_matching_pages_once_per_session(self):
+        ask = {"cwd": str(self.repo), "session_id": "prompt-sess",
+               "prompt": "The Payments API retries twice; can you check the invoice due dates?"}
+        out = self.hook("prompt", ask).stdout
+        self.assertIn("## Memex: pages that match this request\n- [[Payments API]] (system", out)
+        self.assertEqual(self.hook("prompt", ask).stdout, "")  # once per session
+        self.assertEqual(self.hook("prompt", {**ask, "session_id": "other-sess",
+                                              "prompt": "rename the button colour on the login screen"}).stdout, "")
+        self.assertEqual(self.hook("prompt", {**ask, "cwd": str(self.V), "session_id": "vault-sess"}).stdout, "")
+        self.assertIn("[[Payments API]]", self.hook("session-start", {"cwd": str(self.repo), "session_id": "s2"}).stdout)
+        self.assertEqual(self.hook("prompt", {**ask, "session_id": "s2"}).stdout, "")  # shown at start already
+        self.assertEqual(self.git("check-ignore", "-q", ".memex/shown/s2").returncode, 0)  # machine-local
+
     def test_audit_measures_use_retrieval_rediscovery_and_trend(self):
         proj = self.tmp / "cc-projects" / "-code-payments-api"
         proj.mkdir(parents=True, exist_ok=True)
@@ -836,6 +851,29 @@ class TestSessions(Sandbox):
             for p in (bench, record, report):
                 if p.exists():
                     p.unlink()
+
+    def test_harvest_skip_captured(self):
+        ledger = self.V / ".memex/sessions.jsonl"
+        saved = ledger.read_text() if ledger.exists() else None
+        path = self.transcripts / "captured.jsonl"
+        calls = [{"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": c}}]}}
+            for c in ["ls", "pytest", "git diff", "cat a.py", "memex capture --title 'Retry fix' <<'EOF'\nx\nEOF"]]
+        path.write_text("".join(json.dumps(l) + "\n" for l in [
+            {"type": "user", "timestamp": "2026-09-30T10:00:00Z", "message": {"role": "user", "content": "fix retries"}},
+            *calls]))
+        try:
+            self.hook("session-end", {"session_id": "cap-sess-0009", "transcript_path": str(path), "cwd": str(self.repo)},
+                      "claude")
+            self.assertIn("cap-sess", self.memex("harvest").stdout)
+            self.assertIn("marked 1 session(s) that captured inline as skipped", self.memex("harvest", "--skip-captured").stdout)
+            self.assertNotIn("cap-sess", self.memex("harvest").stdout)
+        finally:
+            path.unlink()
+            if saved is None:
+                ledger.unlink(missing_ok=True)
+            else:
+                ledger.write_text(saved)
 
     def test_ctx_verify_lists_pages_and_checkouts(self):
         ledger = self.V / ".memex/sessions.jsonl"

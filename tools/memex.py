@@ -20,13 +20,14 @@
   memex index · memex lint [--quick|--report]
   memex audit [--days N | --since D --until D] [--json] [--lookups] [--report] [--record]   is Memex earning its
                                               keep? use, retrieval, re-discovery, cost, latency, pipeline health
-  memex harvest [--digest ID | --done ID | --skip-trivial]   sessions recorded at session end, for /harvest
+  memex harvest [--digest ID | --done ID | --skip-trivial | --skip-captured]   sessions recorded at session end
   memex backup [--to DIR]                     git bundle of the vault (restore with git clone)
   memex pull [--merge] · memex push · memex remote   sync with the private remote, if one is attached
   memex init <path> · memex sync [--check] · memex doctor [--fix]
   owner only (the guard blocks agents):  memex remote set <url> | memex remote remove
                                          memex move <path> · memex uninstall [--delete-vault --confirm NAME]
-  memex hook session-start|session-end|hermes  agent hooks: repo recall at start, session ledger at end
+  memex hook session-start|prompt|session-end|hermes   agent hooks: repo recall at start, pages a prompt is
+                                              clearly about (once per session), the session ledger at the end
 
 setup.sh installs this as ~/.local/bin/memex. Otherwise run: python3 <framework>/tools/memex.py …
 The vault comes from $MEMEX_VAULT or ~/.config/memex/config.json. This writes only inside the vault: new
@@ -782,6 +783,12 @@ def cmd_harvest(a):
             sessions.mark(v, r["session_id"], "skipped")
         print(f"marked {len(trivial)} trivial or missing session(s) as skipped")
         return
+    if a.skip_captured:
+        done = [(r, d) for r, d in rows if d["captured"]]
+        for r, d in done:
+            sessions.mark(v, r["session_id"], "skipped")
+        print(f"marked {len(done)} session(s) that captured inline as skipped; {len(rows) - len(done)} left to harvest")
+        return
     if not rows:
         print("Nothing to harvest." + (f" ({len(trivial)} trivial session(s); memex harvest --all lists them, "
                                         "--skip-trivial clears them.)" if trivial else ""))
@@ -1003,6 +1010,115 @@ def stall_line(v: Path) -> str:
             "from this repo.")
 
 
+SHOWN_DIR = Path(".memex") / "shown"  # machine-local: page names already put in front of each session
+PROMPT_MAX_PAGES = 2
+
+
+def shown_file(v: Path, sid: str):
+    sid = re.sub(r"[^A-Za-z0-9_.-]", "", str(sid or ""))[:80]
+    return (v / SHOWN_DIR / sid) if sid else None
+
+
+def shown_pages(v: Path, sid: str) -> set:
+    f = shown_file(v, sid)
+    return set(f.read_text(encoding="utf-8").splitlines()) if f and f.exists() else set()
+
+
+def mark_shown(v: Path, sid: str, pages):
+    f = shown_file(v, sid)
+    if not f or not pages:
+        return
+    f.parent.mkdir(parents=True, exist_ok=True)
+    with open(f, "a", encoding="utf-8") as out:
+        out.write("".join(f"{p}\n" for p in pages))
+    week_ago = datetime.datetime.now().timestamp() - 7 * 86400
+    for old in f.parent.iterdir():  # sessions end; their markers don't need to outlive a week
+        if old.stat().st_mtime < week_ago:
+            old.unlink(missing_ok=True)
+
+
+PROMPT_NOISE = [re.compile(r"<system-reminder>.*?(</system-reminder>|$)", re.S),
+                re.compile(r"<pasted_content[^>]*>.*?(</pasted_content>|$)", re.S), re.compile(r"https?://\S+")]
+PROMPT_PATH = re.compile(r"(?:~|/)?(?:[\w.@-]+/){2,}([\w.@-]+/)?([\w.@-]+)")  # keep a path's last two parts
+PROMPT_PACKAGE = re.compile(r"\b(?:com|org|net|io)\.(?:[a-z0-9_]+\.)+")  # com.acme.pay.Foo -> Foo
+PROMPT_MIN_SCORE, PROMPT_RARE = 6.5, 2  # summed IDF over the compiled pages; "rare" = in at most 2 of them
+PROMPT_GENERIC = set(words("""see save saved each set up local level request result use used using store stored current add added
+adding create created make made new old get got run running check fix fixed issue error why how what does do done can could should
+would will need want way case also just like more one two first last now then still only all any some same other our your my me we
+you they this that these those there here which who when where after before about into over under without within per hey ok okay
+please let thing work working works change changes changed review staged code help tell give look looking think know sure right
+wrong problem able time call called calls value values data list type return returns because since while again already even very
+much many really id ids"""))  # words that say nothing about which page a request is about
+
+
+def keep_word(w: str) -> bool:
+    return w not in STOP and w not in PROMPT_GENERIC and len(w) > 1 and not (w.isdigit() and len(w) < 4)
+
+
+def prompt_words(prompt: str):
+    """The prompt's words in order, without pasted blocks, URLs, path prefixes and package names."""
+    p = prompt
+    for rx in PROMPT_NOISE:
+        p = rx.sub(" ", p)
+    p = PROMPT_PATH.sub(lambda m: " ".join(x for x in m.groups() if x), p)
+    p = PROMPT_PACKAGE.sub(" ", p)
+    seq = words(p[:3000])
+    return seq, {w for w in seq if keep_word(w)}
+
+
+def phrase_in(seq, name) -> bool:
+    n = len(name)
+    return any(seq[i:i + n] == name for i in range(len(seq) - n + 1))
+
+
+def prompt_matches(v: Path, prompt: str, skip=()):
+    """Compiled pages a request is clearly about, best first. A page qualifies when the prompt names it (its title or
+    an alias as a phrase, or a single-word alias), or when the prompt's words in the page's title, aliases and summary
+    are rare among the compiled pages: summed IDF >= PROMPT_MIN_SCORE with 2+ words found in at most PROMPT_RARE
+    pages. Generic words and body text don't count: long prompts would match almost any body. The second page is
+    kept only if it is named too or scores within 60% of the first."""
+    seq, ws = prompt_words(prompt)
+    if len(ws) < 2:
+        return []
+    pages = [d for d in docs(v, "wiki") if not is_source(d)
+             and str(d["fm"].get("status", "")) not in ("superseded", "archived")]
+    head = {d["title"]: {w for w in set(d["fields"]["title"]) | set(d["fields"]["aliases"]) | set(d["fields"]["summary"])
+                         if keep_word(w)} for d in pages}
+    df = {}
+    for h in head.values():
+        for w in h:
+            df[w] = df.get(w, 0) + 1
+    n = len(pages)
+    found = []
+    for d in pages:
+        if d["title"] in skip:
+            continue
+        aliases = [words(x) for x in as_list(d["fm"].get("aliases"))]
+        titles = [words(d["title"]), words(str(d["fm"].get("title") or ""))]
+        named = (any(len(x) >= 2 and phrase_in(seq, x) for x in titles + aliases)
+                 or any(len(x) == 1 and len(x[0]) >= 3 and x[0] in ws for x in aliases))
+        hit = ws & head[d["title"]]
+        score = sum(math.log((n + 1) / df[w]) for w in hit)
+        rare = sum(1 for w in hit if df[w] <= PROMPT_RARE)
+        if named or (score >= PROMPT_MIN_SCORE and rare >= 2):
+            found.append((named, score, d))
+    found.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    if len(found) > 1 and not found[1][0] and found[1][1] < 0.6 * found[0][1]:
+        found = found[:1]
+    return [d for _, _, d in found]
+
+
+def prompt_recall(v: Path, prompt: str, sid: str) -> str:
+    """Context for one prompt: up to 2 compiled pages it is clearly about that this session hasn't been shown yet."""
+    picks = prompt_matches(v, prompt, skip=shown_pages(v, sid))[:PROMPT_MAX_PAGES]
+    if not picks:
+        return ""
+    mark_shown(v, sid, [d["title"] for d in picks])
+    lines = ["## Memex: pages that match this request"] + [recall_line(v / d["path"], d["fm"]) for d in picks]
+    lines.append("Read before relying on memory (`memex read \"<Page>\"`), and check what matters against the code.")
+    return "\n".join(lines)
+
+
 def hook_payload():
     try:
         return {} if sys.stdin.isatty() else (json.load(sys.stdin) or {})
@@ -1033,6 +1149,19 @@ def cmd_hook(a):
                 except Exception:
                     pass
             text = "\n".join(x for x in out if x)
+            if text:
+                print(text)
+                try:
+                    mark_shown(v, payload.get("session_id"), re.findall(r"^- \[\[([^\]]+)\]\]", text, re.M))
+                except OSError:
+                    pass
+        return
+    if a.event == "prompt":
+        if not inside(cwd) and ml.feature("recall", v).get("prompt", True):
+            try:
+                text = prompt_recall(v, str(payload.get("prompt") or ""), payload.get("session_id"))
+            except Exception:
+                text = ""  # never get in the way of a prompt
             if text:
                 print(text)
         return
@@ -1120,7 +1249,7 @@ def main():
     s.add_argument("--fix", action="store_true")
     s.set_defaults(fn=cmd_doctor)
     s = sub.add_parser("hook", help="agent hooks: session-start (repo recall), session-end (ledger), hermes")
-    s.add_argument("event", choices=["session-start", "session-end", "hermes"])
+    s.add_argument("event", choices=["session-start", "prompt", "session-end", "hermes"])
     s.add_argument("--agent", help="claude, codex or hermes (recorded in the session ledger)")
     s.set_defaults(fn=cmd_hook)
     s = sub.add_parser("outline", help="a page's summary and headings, with section sizes")
@@ -1135,6 +1264,8 @@ def main():
     s.add_argument("--done", metavar="ID", help="mark a session harvested")
     s.add_argument("--result", choices=["filed", "skipped"], default="filed")
     s.add_argument("--skip-trivial", action="store_true", help="mark trivial and missing sessions as skipped")
+    s.add_argument("--skip-captured", action="store_true",
+                   help="mark sessions that already ran memex capture as skipped (their findings are in the inbox)")
     s.add_argument("--limit", type=int, default=20)
     s.set_defaults(fn=cmd_harvest)
     s = sub.add_parser("backup", help="write a git bundle of the vault (restore with git clone)")

@@ -11,7 +11,7 @@ What it adds (and records in ~/.config/memex/integration.json so re-runs and --r
   claude   ~/.claude/skills/memex · a Memex block in ~/.claude/CLAUDE.md · ~/.claude/settings.json:
            allow `memex` and reads of the vault (no file edits: from other projects the inbox, through
            `memex capture`, is the only way in), the guard hook, and the session hooks (repo-aware recall
-           at SessionStart, the /harvest ledger at SessionEnd)
+           at SessionStart, pages matching the prompt at UserPromptSubmit, the /harvest ledger at SessionEnd)
   codex    ~/.agents/skills/memex · a Memex block in ~/.codex/AGENTS.md · ~/.codex/rules/memex.rules
            (allow `memex`) · the guard and session hooks in ~/.codex/hooks.json · ~/.codex/config.toml: trust the
            vault and add it to sandbox_workspace_write.writable_roots
@@ -139,9 +139,13 @@ def drop_hooks(entries, cmds):
 
 
 def session_hooks(agent):
-    """Global hooks for every session on this machine: repo-aware recall at start, the ledger at the end."""
-    return {"SessionStart": f"{ml.memex_command()} hook session-start",
-            "SessionEnd": f"{ml.memex_command()} hook session-end --agent {agent}"}
+    """Global hooks for every session on this machine: repo-aware recall at start, pages a prompt is clearly about
+    (Claude Code), the ledger at the end."""
+    hooks = {"SessionStart": f"{ml.memex_command()} hook session-start"}
+    if agent == "claude":
+        hooks["UserPromptSubmit"] = f"{ml.memex_command()} hook prompt"
+    hooks["SessionEnd"] = f"{ml.memex_command()} hook session-end --agent {agent}"
+    return hooks
 
 
 def merge_hooks(hooks, prev_cmds, matcher, agent, remove=False):

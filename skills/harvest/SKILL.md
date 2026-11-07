@@ -10,7 +10,9 @@ allowed-tools: Bash(memex *)
 
 Limit: $ARGUMENTS (default 10 sessions per run, oldest first). Work without asking, then give one summary.
 
-1. **Clear the noise first**: `memex harvest --skip-trivial` marks sessions below `harvest.min_tool_calls` and sessions whose transcript is gone as skipped.
+1. **Clear the noise first**:
+   - `memex harvest --skip-trivial` marks sessions below `harvest.min_tool_calls`, and sessions whose transcript is gone, as skipped;
+   - `memex harvest --skip-captured` marks sessions that already ran `memex capture` as skipped. Their findings are in the inbox; harvest is for the sessions that captured nothing.
 2. **For each session in the list above**, one at a time:
    1. `memex harvest --digest <id>` writes `inbox/YYYY-MM-DD Session <repo> <id>.md` and prints its path. The digest is extracted from the transcript (the owner's prompts, files changed, commands, commits, the final message), with secrets already redacted. Read all of it.
    2. **Decide what's durable.** Keep only knowledge that will matter again:

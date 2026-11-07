@@ -42,6 +42,7 @@ Show the decision table (item · domain · decision · reason · page plan), the
 
 ## 3. Ingest the `auto` items, one at a time
 - Oldest first, up to the limit. List the remaining `auto` items as pending for the next run.
+- Captures get no source page of their own: fold each one into its canonical page(s), citing the raw file (AGENTS.md → *Page conventions*). A capture that repeats a page with nothing new is `no-material`.
 - For each one, follow `/ingest` steps 1, 2, 4 and 5 with `--quick` semantics, and `/inbox`'s `apply` and `task` handling for queued requests and tasks:
   - redact the inbox copy before filing (`[REDACTED: <kind>]`) and list each redaction;
   - `memex file` the redacted original, never a model summary;
