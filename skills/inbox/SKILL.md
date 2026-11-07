@@ -10,6 +10,8 @@ allowed-tools: Bash(memex *)
 
 Limit: $ARGUMENTS (default 10 items per run, oldest first).
 
+If the session context warns that `raw/` files are "filed but not committed", an earlier run filed them and stopped before compiling. Their inbox originals are gone, so take them first, as `ingest` items that skip `memex file`. They count toward the limit.
+
 1. **Triage table first.** For each inbox item: title, domain (one of this vault's domains, see AGENTS.md), proposed action, one-line reason. Actions:
    - `ingest` — quick-mode ingest (no questions).
    - `deep` — important enough for a supervised `/ingest`; leave it in inbox and list it for the owner.

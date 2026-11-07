@@ -9,6 +9,7 @@ HOME and a fake global git config that holds a "real" identity plus an includeIf
 vault's layout, its local-only git safety, the guard (Claude Code, Codex and Hermes payloads), the memex
 CLI, sync, domains, vault locations, and agent integration.
 """
+import datetime
 import json
 import os
 import re
@@ -169,6 +170,8 @@ class TestVaultLayout(Sandbox):
         global_hook = json.loads((self.home / ".claude/settings.json").read_text())["hooks"]["PreToolUse"][0]["hooks"][0]
         self.assertEqual(vault_hook["command"], global_hook["command"])  # identical, so Claude Code runs it once
         self.assertIn(str(self.fw / "hooks" / "guard.py"), vault_hook["command"])
+        hooks = json.loads((self.home / ".claude/settings.json").read_text())["hooks"]
+        self.assertTrue(hooks["UserPromptSubmit"][0]["hooks"][0]["command"].endswith("hook prompt"))
         json.loads((self.V / ".codex/hooks.json").read_text())
 
     def test_domain_folders_and_indexes(self):
@@ -179,6 +182,54 @@ class TestVaultLayout(Sandbox):
 
 
 class TestGitSafety(Sandbox):
+    def test_scoped_recovery_with_empty_inbox_preserves_owner_work(self):
+        """The new recovery context and existing scoped commits must work together."""
+        saved_inbox = {p: p.read_bytes() for p in (self.V / "inbox").iterdir() if p.is_file()}
+        graph = self.V / ".obsidian/graph.json"
+        saved_graph = graph.read_text()
+        log = self.V / "wiki/log.md"
+        note = self.V / "notes/Owner Draft.md"
+        raw = "raw/learning/2026-10-03 Recovered Backoff.md"
+        page = "wiki/learning/concepts/Recovered Backoff.md"
+        try:
+            for inbox in saved_inbox:
+                inbox.unlink()
+            (self.V / raw).write_text(
+                "---\ntitle: Recovered Backoff\ndomain: learning\nsource_type: capture\n---\n"
+                "Backoff spaces retries apart.\n")
+            graph.write_text(saved_graph + "\n")
+            note.write_text("Owner's staged draft\n")
+            self.assertEqual(self.git("add", "notes/Owner Draft.md").returncode, 0)
+            note.write_text("Owner's further unstaged edit\n")
+            context = self.memex("ctx", "auto-inbox")
+            self.assertEqual(context.returncode, 0, context.stderr)
+            self.assertIn("Inbox: 0 item(s)", context.stdout)
+            self.assertIn(raw, context.stdout)
+            self.assertIn("filed but not committed", self.memex("context").stdout)
+            (self.V / page).write_text(
+                "---\ntype: concept\ndomain: learning\nstatus: active\nsummary: Backoff spaces retries apart.\n"
+                "created: 2026-10-03\nupdated: 2026-10-03\nreviewed:\n---\n"
+                "> [!summary]\n> Backoff spaces retries apart.\n\n> [!mine] My take\n> (none yet)\n\n"
+                "## Content\n- Backoff spaces retries apart ([[2026-10-03 Recovered Backoff|src]]).\n\n"
+                "## Sources\n- [[2026-10-03 Recovered Backoff]]\n\n---\n## Timeline\n"
+                "- 2026-10-03 | [[2026-10-03 Recovered Backoff]] | Recovered.\n")
+            log.write_text(log.read_text() + "\n## [2026-10-03] inbox | auto: 1 items\n"
+                           "- Recovered a filed capture into [[Recovered Backoff]].\n")
+            result = self.memex("commit", "inbox: auto 1 items", "--only", raw, page, "wiki/log.md")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            changed = set(self.git("diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD").stdout.splitlines())
+            self.assertEqual(changed, {raw, page, "wiki/log.md", "wiki/index.md", "wiki/learning/Learning Index.md"})
+            self.assertEqual(self.git("show", ":notes/Owner Draft.md").stdout, "Owner's staged draft\n")
+            self.assertEqual(note.read_text(), "Owner's further unstaged edit\n")
+            self.assertIn(".obsidian/graph.json", self.git("diff", "--name-only").stdout)
+            self.assertNotIn("filed but not committed", self.memex("context").stdout)
+        finally:
+            for inbox, body in saved_inbox.items():
+                inbox.write_bytes(body)
+            graph.write_text(saved_graph)
+            self.git("reset", "-q", "--", "notes/Owner Draft.md")
+            note.unlink(missing_ok=True)
+
     def test_scoped_commit_preserves_unrelated_edits_and_staging(self):
         graph = self.V / ".obsidian/graph.json"
         original = graph.read_text()
@@ -572,6 +623,40 @@ class TestCLI(Sandbox):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("capture refused", r.stderr)
 
+    def test_capture_refuses_a_likely_duplicate(self):
+        page = self.V / "wiki/learning/concepts/Retry Budget Exhaustion.md"
+        page.write_text("---\ntype: concept\ndomain: learning\nsummary: Workers stop retrying when the budget runs out.\n"
+                        "---\nx\n")
+        made = []
+        try:
+            args = ["capture", "--title", "Retry budget exhaustion in workers", "--domain", "learning"]
+            r = self.memex(*args, stdin="note\n")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("capture refused: Memex may already have this", r.stderr)
+            self.assertIn("concepts/Retry Budget Exhaustion.md", r.stderr)
+            for extra in (["--new"], ["--action", "update", "--target", "Retry Budget Exhaustion"]):
+                r = self.memex(*args, *extra, stdin="note\n")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                made.append(self.V / r.stdout.strip())
+        finally:
+            page.unlink()
+            for p in made:
+                p.unlink()
+
+    def test_context_flags_a_stale_hot_md(self):
+        self.assertNotIn("may be out of date", self.memex("context").stdout)
+        hot = self.V / "wiki/hot.md"
+        saved = hot.read_text()
+        hot.write_text(saved + "\n")
+        try:
+            r = self.memex("commit", "close: old hot", env={**self.env, "GIT_COMMITTER_DATE": "2026-01-01T12:00:00"})
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("(Last rewritten 2026-01-01", self.memex("context").stdout)
+        finally:
+            hot.write_text(saved)
+            self.memex("commit", "close: hot")
+        self.assertNotIn("may be out of date", self.memex("context").stdout)
+
     def test_file_moves_inbox_items_into_raw(self):
         (self.V / "inbox/clip.md").write_text("---\ntitle: Clip\n---\nbody\n")
         page = self.V / "wiki/learning/concepts/Links Clip.md"
@@ -607,6 +692,23 @@ class TestCLI(Sandbox):
         self.assertIn("## wiki/hot.md", out)
         self.assertNotIn("WARNING", out)
 
+    def test_ctx_auto_inbox_lists_everything_and_pending_changes(self):
+        made = [self.V / f"inbox/2026-10-01 Item {i:02d}.md" for i in range(25)]
+        for p in made:
+            p.write_text("x\n")
+        page = self.V / "wiki/learning/concepts/Half Done.md"
+        page.write_text("---\ntype: concept\n---\nx\n")
+        try:
+            out = self.memex("ctx", "auto-inbox").stdout
+            self.assertIn("2026-10-01 Item 24.md", out)
+            self.assertNotIn("more", out)
+            self.assertIn("Uncommitted changes outside inbox/: 1", out)
+            self.assertIn("?? wiki/learning/concepts/Half Done.md", out)
+        finally:
+            for p in made + [page]:
+                p.unlink()
+        self.assertIn("Uncommitted changes outside inbox/: none", self.memex("ctx", "auto-inbox").stdout)
+
     def test_hermes_hook(self):
         r = self.memex("hook", "hermes", stdin=json.dumps({"cwd": str(self.tmp), "extra": {"is_first_turn": True}}))
         self.assertIn("memex search", json.loads(r.stdout)["context"])
@@ -620,6 +722,59 @@ class TestRetrieval(Sandbox):
         self.assertIn("partial matches", self.memex("search", "idempotency", "zebra").stdout)
         hits = json.loads(self.memex("search", "retry", "--json").stdout)
         self.assertEqual(hits[0]["path"], OTHER)
+
+    def test_search_covers_the_inbox_and_labels_it(self):
+        out = self.memex("search", "hello").stdout
+        self.assertIn("inbox/2026-09-27 Some Capture.md", out)
+        self.assertIn("[inbox: captured, not compiled or reviewed yet]", out)
+        self.assertIn("No matches", self.memex("search", "hello", "--in", "wiki").stdout)
+        hits = json.loads(self.memex("search", "hello", "--json").stdout)
+        self.assertTrue(hits[0]["inbox"])
+
+    def test_search_folds_sources_a_compiled_page_cites(self):
+        made = {
+            "wiki/learning/sources/Backoff Article 2026-09-21.md":
+                "---\ntype: source\ndomain: learning\nraw: \"[[2026-09-21 Backoff Article]]\"\nsummary: Backoff "
+                "spreads retries.\n---\nBackoff spreads retries out.\n",
+            "wiki/learning/concepts/Backoff.md":
+                "---\ntype: concept\ndomain: learning\nsummary: Waiting longer between retries.\nsources: "
+                "[\"[[2026-09-21 Backoff Article]]\"]\n---\nBackoff spreads retries ([[2026-09-21 Backoff Article|src]]).\n",
+        }
+        for rel_path, body in made.items():
+            (self.V / rel_path).write_text(body)
+        try:
+            out = self.memex("search", "backoff").stdout
+            self.assertIn("1 source page(s) folded into the pages that cite them", out)
+            self.assertIn("concepts/Backoff.md", out)
+            self.assertNotIn("sources/Backoff Article", out)
+            self.assertIn("sources/Backoff Article", self.memex("search", "backoff", "--all-sources").stdout)
+        finally:
+            for rel_path in made:
+                (self.V / rel_path).unlink()
+
+    def test_compiled_pages_rank_above_sources_and_exact_titles_first(self):
+        made = {
+            "wiki/learning/sources/Jitter Note 2026-09-21.md":
+                "---\ntype: source\ndomain: learning\nsummary: Jitter spreads retries.\n---\nJitter spreads retries.\n",
+            "wiki/learning/concepts/Jitter.md":
+                "---\ntype: concept\ndomain: learning\nsummary: Random delay added to retries.\n---\n"
+                + "Jitter spreads retries over time.\n" + "Background filler about distributed systems.\n" * 6,
+        }
+        for k in range(7):
+            made[f"wiki/learning/sources/Zeta Note {k} 2026-09-2{k}.md"] = f"---\ntype: source\n---\nzeta {k}\n"
+        for rel_path, body in made.items():
+            (self.V / rel_path).write_text(body)
+        try:
+            out = self.memex("search", "jitter").stdout.splitlines()
+            self.assertTrue(out[1].startswith("- wiki/learning/concepts/Jitter.md"), out)  # exact title, long page
+            out = self.memex("search", "jitter", "retries").stdout.splitlines()
+            self.assertTrue(out[1].startswith("- wiki/learning/concepts/Jitter.md"), out)  # compiled beats source
+            out = self.memex("search", "zeta").stdout
+            self.assertIn("7 match(es); showing 5 (--limit 7 for all)", out)
+            self.assertEqual(out.count("\n- "), 5)
+        finally:
+            for rel_path in made:
+                (self.V / rel_path).unlink()
 
     def test_sections_and_outline(self):
         r = self.memex("read", "Idempotency Keys#Content")
@@ -719,6 +874,185 @@ class TestSessions(Sandbox):
         self.assertLessEqual(len(out.splitlines()), 15)
         self.assertEqual(self.hook("session-start", {"cwd": str(self.tmp / "code" / "other")}).stdout, "")
         self.assertEqual(self.hook("session-start", {"cwd": str(self.V)}).stdout, "")
+
+    def test_recall_puts_playbooks_first_via_applies_to(self):
+        book = self.V / "wiki/engineering/playbooks/Running Payments Tests.md"
+        book.write_text("---\ntype: playbook\ndomain: engineering\nstatus: active\nsummary: How to run the suite.\n"
+                        "applies_to: [payments-api]\nrecall: pytest needs TZ=UTC or the invoice tests fail\n"
+                        "verified: 2026-09-25\ncreated: 2026-09-25\nupdated: 2026-09-25\n---\nSteps.\n")
+        try:
+            out = self.hook("session-start", {"cwd": str(self.repo)}).stdout
+            self.assertIn("Before building, testing or running anything here:\n- [[Running Payments Tests]] "
+                          "(playbook, verified 2026-09-25): pytest needs TZ=UTC or the invoice tests fail", out)
+            self.assertLess(out.index("Running Payments Tests"), out.index("[[Payments API]]"))
+            self.assertIn("Background (may be out of date", out)
+            self.assertIn("[[Payments API]] (system, updated 2026-09-20, not verified against code)", out)
+            self.assertLessEqual(len(out.splitlines()), 15)
+            self.assertTrue(out.rstrip().splitlines()[-1].startswith("More:"))
+        finally:
+            book.unlink()
+
+    def test_prompt_hook_names_matching_pages_once_per_session(self):
+        ask = {"cwd": str(self.repo), "session_id": "prompt-sess",
+               "prompt": "The Payments API retries twice; can you check the invoice due dates?"}
+        out = self.hook("prompt", ask).stdout
+        self.assertIn("## Memex: pages that match this request\n- [[Payments API]] (system", out)
+        self.assertEqual(self.hook("prompt", ask).stdout, "")  # once per session
+        self.assertEqual(self.hook("prompt", {**ask, "session_id": "other-sess",
+                                              "prompt": "rename the button colour on the login screen"}).stdout, "")
+        self.assertEqual(self.hook("prompt", {**ask, "cwd": str(self.V), "session_id": "vault-sess"}).stdout, "")
+        self.assertIn("[[Payments API]]", self.hook("session-start", {"cwd": str(self.repo), "session_id": "s2"}).stdout)
+        self.assertEqual(self.hook("prompt", {**ask, "session_id": "s2"}).stdout, "")  # shown at start already
+        self.assertEqual(self.git("check-ignore", "-q", ".memex/shown/s2").returncode, 0)  # machine-local
+
+    def test_audit_measures_use_retrieval_rediscovery_and_trend(self):
+        proj = self.tmp / "cc-projects" / "-code-payments-api"
+        proj.mkdir(parents=True, exist_ok=True)
+        usage = {"input_tokens": 10, "cache_read_input_tokens": 1000, "output_tokens": 50}
+
+        def session(name, sid, cwd, calls, recall=""):
+            lines = [{"type": "attachment", "sessionId": sid, "cwd": cwd, "timestamp": "2026-09-30T10:00:00Z",
+                      "attachment": {"type": "hook_success", "hookName": "SessionStart:startup", "content": recall}}]
+            for i, (cmd, res) in enumerate(calls):
+                tid = f"{sid}-t{i}"
+                lines += [{"type": "assistant", "sessionId": sid, "cwd": cwd, "timestamp": f"2026-09-30T10:{10 + i * 2:02d}:00Z",
+                           "message": {"id": f"{sid}-m{i}", "usage": usage, "content": [
+                               {"type": "tool_use", "id": tid, "name": "Bash", "input": {"command": cmd}}]}},
+                          {"type": "user", "sessionId": sid, "cwd": cwd, "timestamp": f"2026-09-30T10:{11 + i * 2:02d}:00Z",
+                           "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid, "content": res}]}}]
+            lines.append({"type": "assistant", "sessionId": sid, "cwd": cwd, "timestamp": "2026-09-30T11:00:00Z",
+                          "message": {"id": f"{sid}-end", "usage": usage, "content": [{"type": "text", "text": "done"}]}})
+            (proj / name).write_text("".join(json.dumps(l) + "\n" for l in lines))
+
+        cap = "memex capture --title \"Invoice timezone bug fixed by UTC\" --domain engineering --why w <<'EOF'\nx\nEOF"
+        session("a.jsonl", "sess-a", str(self.repo), [
+            ("memex search refund window", "No matches for 'refund window' in wiki, inbox/. Try synonyms"),
+            ('memex read "Payments API"', "<!-- wiki/engineering/systems/Payments API.md -->\nbody"),
+            (cap, "inbox/2026-09-30 Invoice timezone bug fixed by UTC.md")],
+            recall="## Memex: what the owner's knowledge base says about `payments-api`\n- [[Payments API]] (system): x")
+        session("b.jsonl", "sess-b", str(self.repo), [
+            (cap.replace("by UTC", "by UTC fixture"), "inbox/2026-09-30 Invoice timezone bug fixed by UTC fixture.md"),
+            (cap, "memex: capture refused: Memex may already have this:\n  - inbox/x.md")])
+        session("c.jsonl", "sess-c", str(self.V), [])
+        bench = self.V / "meta/audit/search-benchmark.tsv"
+        bench.parent.mkdir(parents=True, exist_ok=True)
+        bench.write_text("# query<TAB>page\npayments api\tPayments API\n")
+        env = {**self.env, "MEMEX_TRANSCRIPTS": str(self.tmp / "cc-projects")}
+        record, report = self.V / ".memex/audit.jsonl", self.V / f"meta/audit/{datetime.date.today().isoformat()}.md"
+        try:
+            r = self.memex("audit", "--since", "2026-09-30", "--until", "2026-09-30", "--json", env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            m = json.loads(r.stdout)["metrics"]
+            want = {"sessions": 2, "vault_sessions": 1, "lookup_sessions": 1, "lookup_pct": 50.0, "capture_sessions": 2,
+                    "captures": 2, "gate_refusals": 1, "queries": 1, "zero_hit_pct": 100.0, "reads": 1,
+                    "recall_sessions": 1, "recall_opened_pct": 100.0, "recaptured": 1, "bench_hit1": 1, "bench_hit3": 1}
+            self.assertEqual({k: m[k] for k in want}, want)
+            self.assertGreater(m["memex_token_pct"], 0)
+            r = self.memex("audit", "--since", "2026-09-30", "--until", "2026-09-30", "--record", "--report", env=env)
+            self.assertIn("Looked something up: 1 (50.0%)", r.stdout)
+            self.assertTrue(report.exists())
+            self.assertEqual(len(record.read_text().splitlines()), 1)
+            self.assertEqual(self.git("check-ignore", "-q", ".memex/audit.jsonl").returncode, 0)  # machine-local
+            out = self.memex("audit", "--since", "2026-09-29", "--until", "2026-09-30", env=env).stdout
+            self.assertIn("(was 50.0% in 2026-09-30..2026-09-30)", out)
+            self.assertIn("Search benchmark: hit@1 1/1", out)
+            listed = self.memex("audit", "--since", "2026-09-30", "--until", "2026-09-30", "--lookups", env=env).stdout
+            self.assertIn("a.jsonl · tool sess-a-t0\n$ memex search refund window\nNo matches", listed)
+            self.assertNotIn("capture", listed)  # lookups only
+        finally:
+            for p in (bench, record, report):
+                if p.exists():
+                    p.unlink()
+
+    def test_harvest_skip_captured(self):
+        ledger = self.V / ".memex/sessions.jsonl"
+        saved = ledger.read_text() if ledger.exists() else None
+        path = self.transcripts / "captured.jsonl"
+        calls = [{"type": "assistant", "message": {"role": "assistant", "content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": c}}]}}
+            for c in ["ls", "pytest", "git diff", "cat a.py", "memex capture --title 'Retry fix' <<'EOF'\nx\nEOF"]]
+        path.write_text("".join(json.dumps(l) + "\n" for l in [
+            {"type": "user", "timestamp": "2026-09-30T10:00:00Z", "message": {"role": "user", "content": "fix retries"}},
+            *calls]))
+        try:
+            self.hook("session-end", {"session_id": "cap-sess-0009", "transcript_path": str(path), "cwd": str(self.repo)},
+                      "claude")
+            self.assertIn("cap-sess", self.memex("harvest").stdout)
+            self.assertIn("marked 1 session(s) that captured inline as skipped", self.memex("harvest", "--skip-captured").stdout)
+            self.assertNotIn("cap-sess", self.memex("harvest").stdout)
+        finally:
+            path.unlink()
+            if saved is None:
+                ledger.unlink(missing_ok=True)
+            else:
+                ledger.write_text(saved)
+
+    def test_ctx_verify_lists_pages_and_checkouts(self):
+        ledger = self.V / ".memex/sessions.jsonl"
+        saved = ledger.read_text() if ledger.exists() else None
+        try:
+            self.hook("session-end", {"session_id": "verify-sess", "cwd": str(self.repo)}, "claude")
+            today = datetime.date.today().isoformat()
+            for name, updated, checked in (("Current Runbook", today, today), ("Changed Runbook", today, "2026-09-01")):
+                (self.V / f"wiki/engineering/playbooks/{name}.md").write_text(
+                    f"---\ntype: playbook\nstatus: active\napplies_to: [payments-api]\nupdated: {updated}\n"
+                    f"verified: {checked}\n---\nSteps.\n")
+            out = self.memex("ctx", "verify").stdout
+            self.assertIn("Due for /verify: 2 of 3", out)
+            self.assertIn("- Changed Runbook (playbook; repo: payments-api): DUE, changed " + today, out)
+            self.assertIn("- Payments API (system; repo: acme/payments-api): DUE, never verified", out)
+            self.assertLess(out.index("Changed Runbook"), out.index("Payments API"))  # playbooks first
+            self.assertIn(f"Current (not due): Current Runbook (checked {today})", out)
+            self.assertIn(f"- payments-api: {self.repo}", out)
+        finally:
+            for name in ("Current Runbook", "Changed Runbook"):
+                (self.V / f"wiki/engineering/playbooks/{name}.md").unlink(missing_ok=True)
+            if saved is None:
+                ledger.unlink(missing_ok=True)
+            else:
+                ledger.write_text(saved)
+
+    def test_half_filed_raw_is_reported(self):
+        half = self.V / "raw/learning/2026-09-02 Half Filed.md"
+        half.write_text("---\ntitle: Half Filed\n---\nx\n")
+        snap = self.V / "raw/learning/2026-09-02 Code check payments abc1234.md"  # a /verify run in progress
+        snap.write_text("---\ntitle: Code check\nsource_type: code-snapshot\n---\nx\n")
+        try:
+            ctx = self.memex("context").stdout
+            self.assertIn("WARNING: 1 file(s) in raw/ are filed but not committed", ctx)
+            self.assertIn("raw/learning/2026-09-02 Half Filed.md", ctx)
+            self.assertNotIn("Code check payments", ctx)
+        finally:
+            half.unlink()
+            snap.unlink()
+        self.assertNotIn("filed but not committed", self.memex("context").stdout)
+
+    def test_stall_alarm_only_when_no_commit_followed_a_waiting_capture(self):
+        import time
+        other = {"cwd": str(self.tmp / "code" / "other")}
+        cfg = self.V / ".memex/vault.json"
+        saved = cfg.read_text()
+        data = json.loads(saved)
+        data["recall"] = {**data.get("recall", {}), "stall_hours": 0.0005}  # 1.8 s
+        cfg.write_text(json.dumps(data))
+        item = self.V / "inbox/2026-09-01 Forgotten Capture.md"
+        try:
+            time.sleep(2.1)  # the capture must arrive after the last commit's second
+            item.write_text("---\ntitle: Forgotten\n---\nx\n")
+            time.sleep(2.2)
+            out = self.hook("session-start", other).stdout
+            self.assertIn("Memex inbox looks stalled: 1 capture(s) have waited since", out)
+            self.assertIn("Tell the owner once", out)
+            self.assertIn("WARNING: the inbox looks stalled: 1 capture(s)", self.memex("context").stdout)
+            # an inbox run that commits anything has seen the capture: leaving it for the owner is not a stall
+            self.assertEqual(self.memex("commit", "inbox: auto 0 items").returncode, 0)
+            self.assertEqual(self.hook("session-start", other).stdout, "")
+            self.assertNotIn("looks stalled", self.memex("context").stdout)
+        finally:
+            cfg.write_text(saved)
+            if item.exists():
+                item.unlink()
+            self.memex("commit", "test: cleanup")
 
     def test_ledger_harvest_and_digests(self):
         import time

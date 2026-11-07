@@ -15,7 +15,7 @@ Memex/                      FRAMEWORK: code only. Clone it on every machine; pus
   inbox/ raw/ wiki/ journal/ notes/ outputs/ Home.md meta/bases/ meta/lint/ .obsidian/   vault-owned (committed)
   .memex/vault.json · .memex/local.md · .memex/domains.json · .memex/domains/*.md          vault config (committed)
   AGENTS.md CLAUDE.md .claude/ .codex/ .agents/ meta/templates/ meta/docs/ Memex Manual.md  managed (rendered, not committed)
-  .memex/state.json · remote.json · sessions.jsonl · backup.json · backup/                 machine-local (not committed)
+  .memex/state.json · remote.json · sessions.jsonl · audit.jsonl · backup.json · backup/   machine-local (not committed)
 ```
 
 - **Why split.** Framework improvements (a new domain, a relaxed rule, a better skill) reach every vault by pulling the framework, and knowledge can never end up in the framework's repo or its remote.
@@ -37,8 +37,9 @@ Memex/                      FRAMEWORK: code only. Clone it on every machine; pus
 | Guard | `hooks/guard.py` | blocks tool calls that break the ownership table, touch managed or owner-only files, endanger the vault's folder, write into the vault from a session outside it, or run owner-only commands | every agent's pre-tool hook (vault and global config) |
 | CLI | `tools/memex.py` | `path context search read outline related capture file rm commit ctx index lint harvest backup pull push remote move uninstall init sync doctor hook` | agents in any project, skills, hooks, the shell |
 | Index, lint, context | `tools/build_index.py`, `tools/lint.py`, `tools/context.py` | generated indexes; deterministic checks; live context for skills | `memex index`, `memex lint`, `memex ctx`, `memex commit` |
+| Audit | `tools/audit.py`, `skills/audit/` | deterministic metrics from Claude Code transcripts and the vault (use, retrieval, re-discovery, token share, capture latency, pipeline health, the vault's `meta/audit/search-benchmark.tsv`); `--record` keeps a machine-local trend in `.memex/audit.jsonl`; the skill adds a judged sample of lookups | `memex audit`, `/audit` |
 | Secrets | `tools/secretscan.py` | the patterns shared by lint, capture, pre-commit and session digests (`redact`) | — |
-| Session hooks | `memex hook session-start` / `session-end` (`tools/memex.py`), installed globally by `integrate.py` | start: repo-aware recall (pages whose `repo:` matches; silent otherwise); end: one ledger line in `.memex/sessions.jsonl`, no model call | Claude Code and Codex SessionStart/SessionEnd, Hermes `pre_llm_call` (recall only) |
+| Session hooks | `memex hook session-start` / `prompt` / `session-end` (`tools/memex.py`), installed globally by `integrate.py` | start: repo-aware recall (pages whose `repo:`/`applies_to:` matches, playbooks first) plus the inbox stall alarm; prompt (Claude Code `UserPromptSubmit`): up to 2 compiled pages the prompt clearly names or is about, never one this session was already shown (`.memex/shown/`, machine-local); end: one ledger line in `.memex/sessions.jsonl`, no model call | Claude Code and Codex SessionStart/SessionEnd, Hermes `pre_llm_call` (recall only) |
 | Harvest | `tools/sessions.py`, `skills/harvest/` | reads Claude Code and Codex JSONL transcripts into verbatim digests (one turn = prompt + the agent's last answer, plus files, commands and commits; secrets redacted), then the skill files and compiles them | `/harvest`, `/close`, `memex harvest` |
 | Retrieval | `tools/memex.py` (`rank`, `section`, `cmd_related`) | BM25 over weighted fields; section reads (`Page#Heading`), outlines and related pages for progressive disclosure | `memex search/read/outline/related`, skills |
 | Backup | `tools/vault.py` (`bundle`, `backup_age`) | verified git bundles of the vault, pruned to `backup.keep`; age reported by doctor and the session context | `memex backup` |
@@ -54,7 +55,7 @@ Memex/                      FRAMEWORK: code only. Clone it on every machine; pus
 - **Managed** files come from the framework on every sync. They are listed in `.memex/state.json`, excluded through a marked block in `.git/info/exclude`, and the guard refuses edits to them.
   - If someone edits one by hand, sync backs it up to `.memex/backup/<time>/` and overwrites it. Refusing would stall sync, because Obsidian rewrites links in files when pages are renamed.
   - Files the framework no longer renders are removed.
-- **Machine-local state** lives in `.memex/` too but is git-excluded: `state.json` (the sync record), `remote.json` (the attached remote and the last sync results; owner-only for agents), `sessions.jsonl`, `backup.json` and `backup/`.
+- **Machine-local state** lives in `.memex/` too but is git-excluded: `state.json` (the sync record), `remote.json` (the attached remote and the last sync results; owner-only for agents), `sessions.jsonl`, `audit.jsonl` (the `memex audit --record` trend), `backup.json` and `backup/`.
 - **Vault config** lives in `.memex/` and is committed.
   - `vault.json` holds the name, `domains` (`"default"` follows the framework's default set) and `identity`. Agents may not write it.
   - `local.md` holds vault-only rules, rendered at the end of `AGENTS.md` with precedence over the framework's rules.
@@ -113,7 +114,7 @@ Each layer catches what the one above can miss. Prose alone is advice.
 
 From other projects, agents read the vault and write only through `memex capture`, which drops a file into `inbox/`. The guard decides "outside" from the session's `cwd`, not from a `cd` inside a shell command. Outside the vault it refuses file-tool writes, shell writes, `memex rm`/`memex file` and `obsidian` writes into the vault. Only sessions in the vault compile, edit and delete.
 
-Scheduled admission and ingestion uses `skills/auto-inbox/SKILL.md` in a local vault session. It reuses ingest's material-value test and inbox's quick-mode limits, preserves deferred and no-material entries, and supports read-only review. The agent scheduler owns the cadence; the framework installs no timer. `memex commit --only <files...>` includes only named files and generated indexes, preserving unrelated staged and unstaged changes; its default still commits the entire vault. Scoped commits refuse directories, paths escaping the vault and partial merge resolutions, use literal Git pathspecs, and retain identity, lint and hook checks. Unattended ingestion also defers when pre-existing wiki/raw work or an overlapping writer would contaminate the batch.
+Scheduled admission and ingestion uses `skills/auto-inbox/SKILL.md` in a local vault session. It reuses ingest's material-value test and inbox's quick-mode limits, preserves deferred and no-material entries, and supports read-only review. The agent scheduler owns the cadence; the framework installs no timer. `memex commit --only <files...>` includes only named files and generated indexes, preserving unrelated staged and unstaged changes; its default still commits the entire vault. Scoped commits refuse directories, paths escaping the vault and partial merge resolutions, use literal Git pathspecs, and retain identity, lint and hook checks. Unattended ingestion can resume untracked raw files left by an interrupted run, including when the inbox is empty. Code snapshots from `/verify` are excluded from recovery; other pre-existing wiki/raw work or an overlapping writer defers ingestion. Review-only runs never file or commit recovery candidates.
 
 The vault's guard hook command is byte-identical to the global one (`memexlib.guard_command()`), so Claude Code runs it once. Hook commands use absolute framework paths. Permission rules use the `memex` shim, because paths with spaces don't match reliably in Bash rules.
 
@@ -176,4 +177,4 @@ sequenceDiagram
 python3 tools/test_memex.py   # temp framework copy + vault; fake HOME and global git config; never touches yours
 bash -n setup.sh tools/setup-qmd.sh
 ```
-CI (`.github/workflows/ci.yml`) runs these on macOS and Linux, plus a check that no knowledge is tracked.
+CI (`.github/workflows/ci.yml`) runs these on macOS and Linux, plus a check that no knowledge is tracked. Python 3.9 uses Ubuntu 24.04 because `setup-python` has no Python 3.9 build for Ubuntu 26.04; Python 3.12 keeps `ubuntu-latest`, and both versions also run on `macos-latest`.

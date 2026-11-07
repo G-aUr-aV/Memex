@@ -161,10 +161,13 @@ def _shell(cmd) -> str:
     return str(cmd or "")
 
 
+CAPTURE = re.compile(r"(?:^|[\s;&|(`'\"])(?:memex|memex\.py['\"]?)\s+capture\b")
+
+
 def digest(path) -> dict:
     """Extract what a session did. Never raises for odd content; a missing file gives an empty digest."""
     d = {"prompts": [], "turns": [], "files": [], "commands": [], "commits": [], "final": "", "tool_calls": 0,
-         "started": "", "ended": "", "branch": "", "missing": False, "unparsed": False}
+         "started": "", "ended": "", "branch": "", "missing": False, "unparsed": False, "captured": 0}
     p = Path(path) if path else None
     if not p or not p.is_file():
         d["missing"] = True
@@ -196,6 +199,8 @@ def digest(path) -> dict:
         if not cmd:
             return
         short = cmd.splitlines()[0][:300] + (" …" if len(cmd) > 300 or "\n" in cmd else "")
+        if CAPTURE.search(cmd):
+            d["captured"] += 1  # the session already put its findings in the inbox
         if "git commit" in cmd:
             d["commits"].append(short)
         elif len(d["commands"]) < MAX_COMMANDS:

@@ -7,6 +7,8 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 
 ## Unreleased: 0.3.0, framework and vault split
 ### Fixed
+- Keep the Python 3.9 Linux CI job on Ubuntu 24.04: `ubuntu-latest` moved to Ubuntu 26.04, where `setup-python` cannot install Python 3.9. Python 3.12 still tests `ubuntu-latest`; both Python versions continue to test macOS.
+- Reconciled the independently added `/auto-inbox` workflows: retain full-inbox context, interrupted-run recovery and `/verify` coordination while preserving scoped commits and unrelated staged or unstaged changes. Recovery is checked before exiting for an empty inbox; review-only runs never file or commit recovery candidates.
 - Codex's global `SessionEnd` hook now requests its supported 3-second timeout instead of 10 seconds, removing the timeout-clamping warning. Setup refreshes existing installations with the corrected value; other hook timeouts are unchanged.
 
 ### Changed (breaking layout)
@@ -28,6 +30,74 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 - Tests check that skills and docs only use real `memex` subcommands and `setup.sh` flags.
 - Guard: protects managed files and `.memex/vault.json`, refuses deleting or moving a folder that holds the vault, and blocks `git clean -ff/-x/-X` and `git stash --all` there.
 - MIT license.
+
+### Added: unattended inbox
+- **`/auto-inbox` skill** for scheduled runs: reviews every inbox capture for material value (`auto` · `review` · `no-material`), quick-ingests up to 10 clear keepers serially without asking, and leaves the rest in `inbox/` with a reason. It never deletes, switches to review-only when `wiki/` or `raw/` already has uncommitted changes, and starts its report with a one-line headline a scheduler can show. In Claude Code it runs on Claude Sonnet 5.5 at medium effort (`model:` and `effort:` frontmatter), whatever the session's model; other agents ignore those fields.
+- `memex ctx auto-inbox`: the whole inbox (no 20-item cap) plus the vault's uncommitted changes outside `inbox/`.
+
+### Changed: /verify checks what's due, not just the oldest 3
+- `memex ctx verify` marks a page **due** when it was never verified, changed after its last check, or was last checked over 30 days ago. Due pages are listed by exposure (playbooks, which recall shows first, then repo-tied pages), then by reason and age; pages that aren't due are summarised on one line.
+- `/verify` with no argument now checks the first 6 due pages (`all` or a number N also work) and does nothing when nothing is due, so unchanged pages aren't re-checked for the sake of it.
+- **Runs don't trample each other.**
+  - `/verify` stops with "SKIPPED: another vault run in progress" when `wiki/` or `raw/` has uncommitted changes.
+  - `/auto-inbox` stops with "SKIPPED: /verify in progress" when a code snapshot is uncommitted, instead of mistaking it for a half-filed capture.
+  - The session context's half-filed warning ignores code snapshots too.
+
+### Added: task-aware recall, no source page per capture, upkeep helpers
+- **Prompt recall** (`memex hook prompt`, installed as Claude Code's `UserPromptSubmit` hook).
+  - Each prompt can bring up to 2 compiled pages that it names (a title or alias phrase, or a single-word alias) or is clearly about. "Clearly about" means its words in the page's title, aliases and summary are rare among compiled pages: summed IDF ≥ 6.5, with 2+ words found in ≤2 pages.
+  - Pasted blocks, URLs, path prefixes, package names and generic words are ignored, and a page a session was already shown (at start or earlier) never repeats.
+  - On 70 real first prompts it offered pages for 28, all on topic, and nothing for prompts with no matching page. It takes about 20 ms. `recall.prompt: false` turns it off.
+- **Captures skip the source page.** Schema, `/ingest` and `/auto-inbox`: a `source_type: capture` note is compiled straight into its canonical pages, which cite its raw file. It gets a source page only when no compiled page fits, or for redaction or embedded-instruction warnings; real sources keep theirs. Before this, 108 source pages sat against 18 compiled pages, and 77 of them were near-copies.
+- **`memex harvest --skip-captured`** marks sessions that already ran `memex capture` as skipped, so `/harvest` covers the sessions that captured nothing. `/harvest` runs it first.
+- **`/verify`** is pinned to Sonnet 5.5 at medium effort in Claude Code, like `/auto-inbox`, for cheap scheduled runs.
+
+### Added: `memex audit` and `/audit`, so "is Memex helping?" has numbers
+- **`memex audit`** (`tools/audit.py`) reads Claude Code transcripts (`~/.claude/projects`, or `$MEMEX_TRANSCRIPTS`) and the vault for a window (`--days N`, default 14, or `--since`/`--until`). It reports, for sessions outside the vault and the framework:
+  - use: % of sessions that looked up or captured, captures written vs refused by the duplicate gate, captures per full read;
+  - retrieval: zero-hit and partial-only queries, follow-up reads, recalled pages opened later, stall alarms;
+  - re-discovery: captures repeating an earlier capture from another session;
+  - cost and latency: Memex's share of input and output tokens, time spent writing captures;
+  - pipeline health: inbox, half-filed raw, conflicts, verified system pages, unreviewed pages, hot.md age, backup;
+  - the vault's search benchmark, `meta/audit/search-benchmark.tsv` (`query<TAB>expected page`), with hit@1 and hit@3.
+- `--record` appends the key numbers to the machine-local `.memex/audit.jsonl`, and each audit prints "was … in <window>" against the last recorded one. `--report` writes `meta/audit/<date>.md`; `--json` prints everything; `--lookups` lists every lookup with its output. Read-only otherwise, and runs in about 2 s.
+- **`/audit` skill**: the numbers, then a judged sample of real lookups (relevance, used, impact, stale) with the 2026-11-06 audit's rubric, written into the report with a short verdict, then logged and committed.
+
+### Changed: fewer, better captures, and claims checked against the code (audit follow-up)
+- **Capture discipline.** The standing instructions (the CLAUDE.md / AGENTS.md block and the `memex` skill) now say:
+  - capture only durable, *settled* knowledge, and search first;
+  - add to what's already there with `--action update`;
+  - put "as of" on volatile facts;
+  - look things up before building, testing or running in a repo;
+  - treat Memex as a lead to check against the code.
+  - "Say the captured path at the end of your reply" is gone.
+- **Duplicate gate.** `memex capture` refuses a new capture whose title says what an existing page, source or inbox item already says (≥60% of its words). It names the match, and for a source page the compiled page to update instead. `--new` overrides.
+- **Folded sources.** `memex search` folds away source pages that a compiled page ranked above them already cites; `--all-sources` lists them.
+- **`/verify` skill + `memex ctx verify`.** Check system pages and playbooks against the code they describe, read-only on the code.
+  - The evidence is saved as a verbatim code snapshot in `raw/`, which stale claims are struck against.
+  - Summaries are refreshed, and `verified_on`/`verified_at_commit` are filled in.
+  - Code that settles an open conflict is attached as evidence, but the owner decides.
+  - The ctx lists pages least recently verified first, plus each repo's main checkout from the session ledger.
+- **Summaries follow the body.** The schema and `/ingest` now rewrite `summary:` and `> [!summary]` whenever an update changes what a page says is current.
+- **Stale `hot.md` is flagged.** The vault session context marks `wiki/hot.md` when it hasn't been rewritten for over 7 days.
+
+### Changed: retrieval and recall reach the moment of need (from the 2026-11-06 usage audit)
+- **Search covers the inbox.** `memex search` now searches `wiki/` plus `inbox/` by default, and labels inbox hits "captured, not compiled or reviewed yet". Before this, knowledge was invisible for up to days after capture. `--in wiki` keeps the old scope; `--in inbox` is new.
+- **Ranking.**
+  - Compiled pages get a ×1.5 prior and per-capture source pages and inbox items ×0.8. BM25 length normalisation used to rank short dated sources above the canonical page.
+  - A page whose title or an alias equals the query comes first.
+  - `wiki/hot.md` is no longer searched.
+  - The default limit is 5, and the header says how to see the rest.
+  - On the audit's 25-query benchmark, hit@1 went from 9 to 22 and hit@3 from 18 to 23.
+- **Recall.**
+  - Matches `applies_to:` as well as `repo:`/`repos:`, and never picks source pages.
+  - Lists playbooks first under "Before building, testing or running anything here", with an optional one-line `recall:` field (else the summary); other pages follow as background.
+  - Each line says when the page was verified, or "not verified against code" for system pages.
+  - The `More:` footer is never cut off.
+- **Stall alarm.**
+  - When the oldest inbox capture has waited longer than `recall.stall_hours` (default 24), SessionStart in other repos prints one line asking the agent to tell the owner.
+  - The vault session context warns too, and also lists `raw/` files that were filed but never committed.
+- **`/auto-inbox` resumes a run that died.** Untracked `raw/` files with no uncommitted wiki changes are compiled as the oldest items instead of forcing review-only forever. Any other dirty state makes the headline start with `auto-inbox: STALLED:`.
 
 ### Added: automatic memory (Phase 1)
 - **Repo-aware recall:** a global SessionStart hook (`memex hook session-start`, Claude Code and Codex; Hermes on its first turn) prints what the wiki knows about the current repo: pages whose `repo:` matches, their open loops and linked decisions. It prints nothing when nothing matches.

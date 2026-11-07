@@ -4,24 +4,30 @@
   memex path                                  print the vault path
   memex context [--brief]                     what a session starts with: hot.md, recent log, inbox, lint age
                                               (also re-renders the vault's managed files if the framework changed)
-  memex search <terms…> [--in wiki|raw|journal|notes|all] [--limit N] [--json]   BM25-ranked
+  memex search <terms…> [--in wiki|inbox|raw|journal|notes|all] [--limit N] [--all-sources] [--json]
+                                              BM25-ranked; default scope is wiki/ plus inbox/, 5 hits; source pages
+                                              a compiled page above already cites are folded away
   memex read <page name | [[link]] | alias | vault path>[#Heading]      a page, or just one section
   memex outline <page> · memex related <page>          headings with sizes · links in and out, co-cited pages
   memex capture --title T [--domain D] [--why W] [--project P] [--source S]
-                [--action create|update|supersede|delete --target PAGE]    (body on stdin)
+                [--action create|update|supersede|delete --target PAGE] [--new]    (body on stdin; a new
+                capture that looks like an existing page or inbox item is refused unless --new)
   memex file inbox/<file> --domain D [--name "YYYY-MM-DD Title.md"]   file an inbox item into raw/<domain>/
   memex rm <vault path> [--force]             move a wiki/inbox/outputs file to .trash/ (git keeps history)
   memex commit "<op>: <title>" [--force]      rebuild indexes, lint --quick, commit the vault (then push, if
                                               the owner attached a private remote)
   memex ctx <ingest|inbox|lint|today|close|weekly>   live context for a skill
   memex index · memex lint [--quick|--report]
-  memex harvest [--digest ID | --done ID | --skip-trivial]   sessions recorded at session end, for /harvest
+  memex audit [--days N | --since D --until D] [--json] [--lookups] [--report] [--record]   is Memex earning its
+                                              keep? use, retrieval, re-discovery, cost, latency, pipeline health
+  memex harvest [--digest ID | --done ID | --skip-trivial | --skip-captured]   sessions recorded at session end
   memex backup [--to DIR]                     git bundle of the vault (restore with git clone)
   memex pull [--merge] · memex push · memex remote   sync with the private remote, if one is attached
   memex init <path> · memex sync [--check] · memex doctor [--fix]
   owner only (the guard blocks agents):  memex remote set <url> | memex remote remove
                                          memex move <path> · memex uninstall [--delete-vault --confirm NAME]
-  memex hook session-start|session-end|hermes  agent hooks: repo recall at start, session ledger at end
+  memex hook session-start|prompt|session-end|hermes   agent hooks: repo recall at start, pages a prompt is
+                                              clearly about (once per session), the session ledger at the end
 
 setup.sh installs this as ~/.local/bin/memex. Otherwise run: python3 <framework>/tools/memex.py …
 The vault comes from $MEMEX_VAULT or ~/.config/memex/config.json. This writes only inside the vault: new
@@ -46,8 +52,8 @@ from memexlib import FRAMEWORK, LINK, VERSION, VaultError, frontmatter, iter_fil
 TOOLS = FRAMEWORK / "tools"
 NOW = datetime.datetime.now()
 TODAY = NOW.date()
-SCOPES = {"wiki": ["wiki"], "raw": ["raw"], "journal": ["journal"], "notes": ["notes"],
-          "all": ["wiki", "raw", "journal", "notes", "inbox", "outputs"]}
+SCOPES = {"default": ["wiki", "inbox"], "wiki": ["wiki"], "inbox": ["inbox"], "raw": ["raw"], "journal": ["journal"],
+          "notes": ["notes"], "all": ["wiki", "raw", "journal", "notes", "inbox", "outputs"]}
 RM_ALLOWED = {"wiki", "inbox", "outputs"}
 BAD_NAME = re.compile(r"[:\\/#^\[\]|*?\"<>]")
 
@@ -78,9 +84,9 @@ def pointer() -> str:
     v = V()
     d = "|".join(ml.domain_names(v))
     return f"""## Memex: the owner's knowledge base ({v})
-Use it on your own initiative. You don't need to ask the owner first; these commands are pre-approved.
-- **Look up** before answering about the owner's projects, people, decisions or past work, before drafting status updates, and when a command fails twice: `memex search <terms>`, then `memex read "<Page>"`.
-- **Capture** anything durable this session produces (a root cause, a decision and its reason, a gotcha, a command that worked, a preference the owner states): `memex capture --title "<Title>" --domain <{d}> --why "<one line>"` with the note on stdin (3-20 lines, via a heredoc). Say the captured path in one line at the end of your reply.
+Use it on your own initiative. You don't need to ask the owner first; these commands are pre-approved. Treat what it says as a lead to check against the code, not as ground truth.
+- **Look up** before answering about the owner's projects, people, decisions or past work, before drafting status updates, before building, testing or running something in a repo for the first time in a session, and when a command fails twice: `memex search <terms>`, then `memex read "<Page>"`. If the session started with Memex playbooks for this repo, follow them.
+- **Capture** only what is durable *and* settled: a confirmed root cause, a decision and its reason, a gotcha, a command that worked, a preference the owner states. Work in progress (uncommitted designs, temp branches, gap lists) waits until it settles. Search first: if Memex already has it, capture only what you add or correct, with `--action update --target "<Page>"`. Otherwise `memex capture --title "<Title>" --domain <{d}> --why "<one line>"` with the note on stdin (3-20 lines, via a heredoc), with "as of YYYY-MM-DD" on volatile facts. Capture refuses a likely duplicate and names the page to update instead; add `--new` only when the note really is new.
 - **Change or remove** existing knowledge: capture with `--action update|supersede|delete --target "<Page>"` and say what's wrong and why in the note. A session in the vault applies it at its next inbox run.
 - **The inbox is the only way in from here.** Don't edit, move or delete files in the vault yourself; the guard refuses, so use `memex capture`.
 - Sessions are recorded when they end and compiled by `/harvest`, but capture decisive findings right away: the harvest only sees what the transcript shows.
@@ -112,6 +118,24 @@ def safety_notes(v: Path):
     return notes
 
 
+HOT_STALE_DAYS = 7
+
+
+def half_filed(v: Path):
+    """New raw/ files that aren't committed yet: `memex file` ran but the run that filed them never finished. Code
+    snapshots are left out: they belong to a /verify run that commits them itself."""
+    r = ml.git(v, "status", "--porcelain", "-z", "--untracked-files=all", "--", "raw")
+    if r.returncode:
+        return []
+    out = []
+    for e in r.stdout.split("\0"):
+        if e.startswith("?? ") and e[3:].endswith(".md"):
+            fm, _ = frontmatter((v / e[3:]).read_text(encoding="utf-8", errors="ignore"))
+            if str(fm.get("source_type") or "") != "code-snapshot":
+                out.append(e[3:])
+    return out
+
+
 def session_context(rebuild=True) -> str:
     v = V()
     import remote
@@ -141,6 +165,14 @@ def session_context(rebuild=True) -> str:
     hot = v / "wiki" / "hot.md"
     if hot.exists():
         _, body = frontmatter(hot.read_text(encoding="utf-8", errors="ignore"))
+        last = ml.git(v, "log", "-1", "--format=%cs", "--", "wiki/hot.md").stdout.strip()
+        try:
+            days = (TODAY - datetime.date.fromisoformat(last)).days if last else None
+        except ValueError:
+            days = None
+        if days is not None and days > HOT_STALE_DAYS:
+            out.append(f"(Last rewritten {last}, {days} days ago, so it may be out of date: trust the log and the pages "
+                       "over it. /close or /weekly rewrites it.)")
         out += body.strip("\n").splitlines()[:40]
     out += ["", "## Recent log"]
     log = v / "wiki" / "log.md"
@@ -152,6 +184,14 @@ def session_context(rebuild=True) -> str:
     out += ["", f"## Inbox: {len(items)} item(s)"] + [f"- {p.name}" for p in items[:8]]
     if items:
         out.append("Process these with the /inbox procedure once the owner's current request is done (no need to ask).")
+    stall = inbox_stall(v)
+    if stall:
+        out.append(f"WARNING: the inbox looks stalled: {stall[0]} capture(s) have waited since {stall[1]:%Y-%m-%d %H:%M} "
+                   "with no commit since. Check the last /auto-inbox report, and tell the owner.")
+    half = half_filed(v)
+    if half:
+        out.append(f"WARNING: {len(half)} file(s) in raw/ are filed but not committed, so an inbox run probably stopped "
+                   "mid-way: " + ", ".join(half[:4]) + ". /auto-inbox resumes them; /inbox compiles them too.")
     daily = v / "journal" / "daily" / f"{TODAY.isoformat()}.md"
     out.append("")
     out.append(f"Today's daily note: {'exists' if daily.exists() else 'not created yet (suggest /today)'}")
@@ -203,7 +243,7 @@ def as_list(x):
 
 
 def docs(v: Path, scope: str):
-    skip = ml.generated(v) | {"wiki/log.md"}
+    skip = ml.generated(v) | {"wiki/log.md", "wiki/hot.md"}
     for top in SCOPES[scope]:
         base = v / top
         if not base.exists():
@@ -215,15 +255,88 @@ def docs(v: Path, scope: str):
             text = p.read_text(encoding="utf-8", errors="ignore")
             fm, body = frontmatter(text)
             heads = [l.lstrip("#").strip() for l in body.splitlines() if l.startswith("#")]
-            yield {"path": r, "title": p.stem, "fm": fm, "body": body, "fields": {
+            yield {"path": r, "title": p.stem, "fm": fm, "body": body,
+                   "names": [words(p.stem), words(str(fm.get("title") or ""))] + [words(x) for x in as_list(fm.get("aliases"))],
+                   "fields": {
                 "title": words(p.stem), "aliases": words(" ".join(as_list(fm.get("aliases")))),
                 "summary": words(str(fm.get("summary") or "")), "headings": words(" ".join(heads)),
                 "body": words(body)}}
 
 
-def rank(v: Path, query: str, scope="wiki"):
-    """BM25 over weighted fields (title and aliases ×3, summary ×2, headings ×1.5, body ×1). Pages that contain
-    every term come first; if none do, pages with some of the terms are returned instead."""
+def is_source(d) -> bool:
+    return str(d["fm"].get("type") or "") == "source" or "/sources/" in d["path"]
+
+
+def prior(d) -> float:
+    """BM25's length normalisation favours short pages, so the dated per-capture source pages used to outrank the
+    long compiled page that summarises them. Compiled wiki pages get a boost; sources and inbox items a discount."""
+    if d["path"].startswith("inbox/"):
+        return PRIOR_INBOX
+    if d["path"].startswith("wiki/"):
+        return PRIOR_SOURCE if is_source(d) else PRIOR_COMPILED
+    return 1.0
+
+
+PRIOR_COMPILED, PRIOR_SOURCE, PRIOR_INBOX = 1.5, 0.8, 0.8
+STOP = set("a an the and or of in on to for by is are was with from vs via it its as at be no not only into how why "
+           "what when".split())
+
+
+def link_targets(d) -> set:
+    """Names a page links to or cites: body wikilinks plus the frontmatter `sources:`/`raw:` links."""
+    text = d["body"] + " " + " ".join(as_list(d["fm"].get("sources")) + as_list(d["fm"].get("raw")))
+    return {m.group(2).strip() for m in LINK.finditer(text)}
+
+
+def fold_covered(hits):
+    """Drop a source page when a compiled page ranked above it already cites it (its raw file or the page itself):
+    the compiled page holds the current version, and repeated captures of one fact stop crowding the results."""
+    shown, folded, covering = [], 0, set()
+    for s, d in hits:
+        raw = {m.group(2).strip() for m in LINK.finditer(" ".join(as_list(d["fm"].get("raw"))))}
+        if is_source(d) and d["path"].startswith("wiki/") and ({d["title"]} | raw) & covering:
+            folded += 1
+            continue
+        shown.append((s, d))
+        if d["path"].startswith("wiki/") and not is_source(d):
+            covering |= link_targets(d)
+    return shown, folded
+
+
+def content_words(s: str) -> set:
+    return {w for w in words(s) if w not in STOP and not re.fullmatch(r"(19|20)\d\d", w)}
+
+
+def near_duplicates(v: Path, title: str, limit=3):
+    """Pages or inbox items whose title or an alias already says most of what `title` says (≥60% of its words)."""
+    new = content_words(title)
+    if len(new) < 3:
+        return []
+    _, hits, _ = rank(v, title, "default")
+    out = []
+    for _, d in hits[:20]:
+        if max((len(new & (set(n) - STOP)) / len(new) for n in d["names"] if n), default=0) >= 0.6:
+            out.append(d)
+            if len(out) == limit:
+                break
+    return out
+
+
+def compiled_into(v: Path, d) -> str:
+    """The compiled page that cites a source page (its raw file or the page itself), if any: the page to update."""
+    if not is_source(d):
+        return ""
+    names = {d["title"]} | {m.group(2).strip() for m in LINK.finditer(" ".join(as_list(d["fm"].get("raw"))))}
+    for c in docs(v, "wiki"):
+        if not is_source(c) and link_targets(c) & names:
+            return c["title"]
+    return ""
+
+
+def rank(v: Path, query: str, scope="default"):
+    """BM25 over weighted fields (title and aliases ×3, summary ×2, headings ×1.5, body ×1), scaled by prior().
+    A page whose title or an alias is exactly the query comes first. Pages that contain every term come next; if
+    none do, pages with some of the terms are returned instead."""
     terms = list(dict.fromkeys(words(query)))
     corpus = list(docs(v, scope))
     if not terms or not corpus:
@@ -243,10 +356,11 @@ def rank(v: Path, query: str, scope="wiki"):
             idf = math.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5))
             score += idf * tf * (K1 + 1) / (tf + K1 * (1 - B + B * length / avg))
         if matched:
-            scored.append((matched, score, d))
+            scored.append((matched, score * prior(d), d))
     full = [s for s in scored if s[0] == len(terms)]
     pool, partial = (full, False) if full else (scored, True)
-    pool.sort(key=lambda s: (-s[1], s[2]["path"]))
+    qwords = words(query)
+    pool.sort(key=lambda s: (qwords not in s[2]["names"], -s[1], s[2]["path"]))
     return terms, [(round(s, 3), d) for _, s, d in pool], partial
 
 
@@ -266,19 +380,27 @@ def cmd_search(a):
     terms, hits, partial = rank(v, query, a.scope)
     if not terms:
         fail("give at least one search term")
+    folded = 0
+    if not a.all_sources:
+        hits, folded = fold_covered(hits)
     if a.json:
         print(json.dumps([{"path": d["path"], "title": d["title"], "summary": str(d["fm"].get("summary") or ""),
-                           "lines": d["body"].count("\n") + 1, "score": s, "snippet": snippet(d["body"], terms)}
+                           "lines": d["body"].count("\n") + 1, "score": s, "snippet": snippet(d["body"], terms),
+                           "inbox": d["path"].startswith("inbox/")}
                           for s, d in hits[:a.limit]], indent=2))
         return
     if not hits:
         print(f"No matches for {query!r} in {', '.join(SCOPES[a.scope])}/. Try synonyms, fewer terms, or --in all.")
         return
     note = " (no page has every term; showing partial matches)" if partial else ""
-    print(f"{len(hits)} match(es){note}; showing {min(len(hits), a.limit)}:")
+    more = f" (--limit {len(hits)} for all)" if len(hits) > a.limit else ""
+    fold = (f"; {folded} source page(s) folded into the pages that cite them (--all-sources lists them)"
+            if folded else "")
+    print(f"{len(hits)} match(es){note}{fold}; showing {min(len(hits), a.limit)}{more}:")
     for _, d in hits[:a.limit]:
-        summary = str(d["fm"].get("summary") or "")
-        print(f"- {d['path']} ({d['body'].count(chr(10)) + 1} lines)" + (f": {summary}" if summary else ""))
+        summary = str(d["fm"].get("summary") or d["fm"].get("why") or "")
+        tag = " [inbox: captured, not compiled or reviewed yet]" if d["path"].startswith("inbox/") else ""
+        print(f"- {d['path']} ({d['body'].count(chr(10)) + 1} lines){tag}" + (f": {summary}" if summary else ""))
         s = snippet(d["body"], terms)
         if s and s != summary:
             print(f"    {s}")
@@ -440,6 +562,19 @@ def cmd_capture(a):
     if found:
         fail(f"capture refused: possible {', '.join(found)}. Remove it (store a pointer such as "
              "'1Password: <item>') and retry.")
+    if a.action == "create" and not a.new:
+        dups = near_duplicates(v, title)
+        if dups:
+            rows = []
+            for d in dups:
+                about = d["fm"].get("summary") or d["fm"].get("why")
+                into = compiled_into(v, d)
+                rows.append(f"  - {d['path']}" + (f": {about}" if about else "")
+                            + (f" (compiled into [[{into}]]: update that page)" if into else ""))
+            listed = "\n".join(rows)
+            fail("capture refused: Memex may already have this:\n" + listed + "\nRead it first (memex read "
+                 "\"<Page>\"). If your note adds or corrects something, rerun with --action update --target "
+                 "\"<Page>\"; if it is genuinely new knowledge, rerun with --new.")
     inbox = v / "inbox"
     inbox.mkdir(exist_ok=True)
     dest, n = inbox / f"{TODAY.isoformat()} {title}.md", 2
@@ -655,6 +790,12 @@ def cmd_harvest(a):
             sessions.mark(v, r["session_id"], "skipped")
         print(f"marked {len(trivial)} trivial or missing session(s) as skipped")
         return
+    if a.skip_captured:
+        done = [(r, d) for r, d in rows if d["captured"]]
+        for r, d in done:
+            sessions.mark(v, r["session_id"], "skipped")
+        print(f"marked {len(done)} session(s) that captured inline as skipped; {len(rows) - len(done)} left to harvest")
+        return
     if not rows:
         print("Nothing to harvest." + (f" ({len(trivial)} trivial session(s); memex harvest --all lists them, "
                                         "--skip-trivial clears them.)" if trivial else ""))
@@ -766,8 +907,26 @@ def repo_identity(cwd: Path):
 TASK_PREFIX = re.compile(r"^- (\[ \] )?")
 
 
+RECALL_FIELDS = ("repo", "repos", "applies_to")
+
+
+def recall_line(p: Path, fm: dict) -> str:
+    """One line per recalled page: its one-line fix (`recall:`, else the summary) and how fresh it is."""
+    kind = str(fm.get("type") or "page")
+    verified = fm.get("verified") or fm.get("verified_on")
+    if verified:
+        when = f"verified {verified}"
+    elif kind == "system":
+        when = f"updated {fm.get('updated') or '?'}, not verified against code"
+    else:
+        when = f"updated {fm.get('updated') or '?'}"
+    return f"- [[{p.stem}]] ({kind}, {when}): {fm.get('recall') or fm.get('summary') or ''}"
+
+
 def recall(cwd: Path) -> str:
-    """What the wiki knows about the repo at cwd (for SessionStart in other repos); "" when nothing matches."""
+    """What the wiki knows about the repo at cwd (for SessionStart in other repos); "" when nothing matches.
+    Pages match on `repo:`, `repos:` or `applies_to:` (or a title/alias equal to the repo's name). Playbooks come
+    first, since every session in the repo can need them (build, test, run); other pages are background."""
     v = V()
     if not ml.feature("recall", v).get("enabled"):
         return ""
@@ -776,25 +935,34 @@ def recall(cwd: Path) -> str:
     special = ml.special(v)
     found = []
     for p in iter_files(v / "wiki", (".md",)):
-        if rel(p) in special:
+        if rel(p) in special or "/sources/" in rel(p):
             continue
         fm, body = frontmatter(p.read_text(encoding="utf-8", errors="ignore"))
-        if str(fm.get("status", "")) in ("superseded", "archived"):
+        if str(fm.get("status", "")) in ("superseded", "archived") or str(fm.get("type", "")) == "source":
             continue
         score = 0
-        for r in as_list(fm.get("repo")) + as_list(fm.get("repos")):
+        for r in [x for f in RECALL_FIELDS for x in as_list(fm.get(f))]:
             nr = norm_repo(r)
             score = max(score, 3 if slug and nr == slug else 2 if nr and nr.split("/")[-1] == name.lower() else 0)
         if not score and keys & ({p.stem.lower()} | {x.lower() for x in as_list(fm.get("aliases"))}):
             score = 1
         if score:
-            found.append((score, str(fm.get("updated") or ""), p, fm, body))
+            found.append((str(fm.get("type", "")) == "playbook", score, str(fm.get("updated") or ""), p, fm, body))
     if not found:
         return ""
-    found.sort(key=lambda x: (x[0], x[1]), reverse=True)  # best match, then most recently updated
+    found.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)  # playbooks, best match, most recently updated
+    picked = found[:int(ml.feature("recall", v).get("max_pages", 3))]
     lines = [f"## Memex: what the owner's knowledge base says about `{name}`"]
-    for _, _, p, fm, body in found[:int(ml.feature("recall", v).get("max_pages", 3))]:
-        lines.append(f"- [[{p.stem}]] ({fm.get('type', 'page')}, updated {fm.get('updated', '?')}): {fm.get('summary', '')}")
+    books = [x for x in picked if x[0]]
+    if books:
+        lines.append("Before building, testing or running anything here:")
+        lines += [recall_line(p, fm) for _, _, _, p, fm, _ in books]
+    if len(books) < len(picked):
+        lines.append("Background (may be out of date; check the code before relying on it):")
+    for is_book, _, _, p, fm, body in picked:
+        if is_book:
+            continue
+        lines.append(recall_line(p, fm))
         loops = [l.strip() for l in body.splitlines() if l.strip().startswith("- [ ]")][:2]
         grab, bullets = False, []
         for l in body.splitlines():
@@ -812,9 +980,150 @@ def recall(cwd: Path) -> str:
                 decisions.append(f"[[{q.stem}]] ({dfm.get('status', '?')})")
         if decisions:
             lines.append(f"  - decisions: {', '.join(decisions[:3])}")
-    lines.append("More: `memex read \"<Page>\"` · `memex related \"<Page>\"`. Capture what you learn with "
-                 "`memex capture`; this session is also recorded for /harvest when it ends.")
-    return "\n".join(lines[:15])
+    lines = lines[:14] + ["More: `memex read \"<Page>\"` · `memex related \"<Page>\"`. Capture what you learn with "
+                          "`memex capture`; this session is also recorded for /harvest when it ends."]
+    return "\n".join(lines)
+
+
+def inbox_stall(v: Path):
+    """(count, oldest arrival) of captures that have waited longer than recall.stall_hours with no vault commit since
+    they arrived, else None. Inbox runs commit whenever they compile anything, so a capture older than a commit has
+    been seen (and maybe deliberately deferred for the owner); one that no commit has followed for a day means the
+    inbox run has stopped working."""
+    hours = float(ml.feature("recall", v).get("stall_hours", 24))
+    inbox = v / "inbox"
+    if hours <= 0 or not inbox.exists():
+        return None
+    cutoff = datetime.datetime.now().timestamp() - hours * 3600
+    waiting = [p.stat().st_mtime for p in inbox.glob("*") if p.is_file() and not p.name.startswith(".")]
+    waiting = [t for t in waiting if t < cutoff]
+    if not waiting:
+        return None
+    last = ml.git(v, "log", "-1", "--format=%ct").stdout.strip()
+    last = int(last) if last.isdigit() else 0
+    unseen = [t for t in waiting if t >= last + 1]  # commit times have one-second resolution
+    if not unseen:
+        return None
+    return len(unseen), datetime.datetime.fromtimestamp(min(unseen))
+
+
+def stall_line(v: Path) -> str:
+    """The alarm printed at session start in other repos, so a stalled inbox can't stay silent for days."""
+    s = inbox_stall(v)
+    if not s:
+        return ""
+    return (f"Memex inbox looks stalled: {s[0]} capture(s) have waited since {s[1]:%Y-%m-%d %H:%M} with no inbox run "
+            "since, so they are searchable but not compiled. Tell the owner once, in one line; don't try to fix it "
+            "from this repo.")
+
+
+SHOWN_DIR = Path(".memex") / "shown"  # machine-local: page names already put in front of each session
+PROMPT_MAX_PAGES = 2
+
+
+def shown_file(v: Path, sid: str):
+    sid = re.sub(r"[^A-Za-z0-9_.-]", "", str(sid or ""))[:80]
+    return (v / SHOWN_DIR / sid) if sid else None
+
+
+def shown_pages(v: Path, sid: str) -> set:
+    f = shown_file(v, sid)
+    return set(f.read_text(encoding="utf-8").splitlines()) if f and f.exists() else set()
+
+
+def mark_shown(v: Path, sid: str, pages):
+    f = shown_file(v, sid)
+    if not f or not pages:
+        return
+    f.parent.mkdir(parents=True, exist_ok=True)
+    with open(f, "a", encoding="utf-8") as out:
+        out.write("".join(f"{p}\n" for p in pages))
+    week_ago = datetime.datetime.now().timestamp() - 7 * 86400
+    for old in f.parent.iterdir():  # sessions end; their markers don't need to outlive a week
+        if old.stat().st_mtime < week_ago:
+            old.unlink(missing_ok=True)
+
+
+PROMPT_NOISE = [re.compile(r"<system-reminder>.*?(</system-reminder>|$)", re.S),
+                re.compile(r"<pasted_content[^>]*>.*?(</pasted_content>|$)", re.S), re.compile(r"https?://\S+")]
+PROMPT_PATH = re.compile(r"(?:~|/)?(?:[\w.@-]+/){2,}([\w.@-]+/)?([\w.@-]+)")  # keep a path's last two parts
+PROMPT_PACKAGE = re.compile(r"\b(?:com|org|net|io)\.(?:[a-z0-9_]+\.)+")  # com.acme.pay.Foo -> Foo
+PROMPT_MIN_SCORE, PROMPT_RARE = 6.5, 2  # summed IDF over the compiled pages; "rare" = in at most 2 of them
+PROMPT_GENERIC = set(words("""see save saved each set up local level request result use used using store stored current add added
+adding create created make made new old get got run running check fix fixed issue error why how what does do done can could should
+would will need want way case also just like more one two first last now then still only all any some same other our your my me we
+you they this that these those there here which who when where after before about into over under without within per hey ok okay
+please let thing work working works change changes changed review staged code help tell give look looking think know sure right
+wrong problem able time call called calls value values data list type return returns because since while again already even very
+much many really id ids"""))  # words that say nothing about which page a request is about
+
+
+def keep_word(w: str) -> bool:
+    return w not in STOP and w not in PROMPT_GENERIC and len(w) > 1 and not (w.isdigit() and len(w) < 4)
+
+
+def prompt_words(prompt: str):
+    """The prompt's words in order, without pasted blocks, URLs, path prefixes and package names."""
+    p = prompt
+    for rx in PROMPT_NOISE:
+        p = rx.sub(" ", p)
+    p = PROMPT_PATH.sub(lambda m: " ".join(x for x in m.groups() if x), p)
+    p = PROMPT_PACKAGE.sub(" ", p)
+    seq = words(p[:3000])
+    return seq, {w for w in seq if keep_word(w)}
+
+
+def phrase_in(seq, name) -> bool:
+    n = len(name)
+    return any(seq[i:i + n] == name for i in range(len(seq) - n + 1))
+
+
+def prompt_matches(v: Path, prompt: str, skip=()):
+    """Compiled pages a request is clearly about, best first. A page qualifies when the prompt names it (its title or
+    an alias as a phrase, or a single-word alias), or when the prompt's words in the page's title, aliases and summary
+    are rare among the compiled pages: summed IDF >= PROMPT_MIN_SCORE with 2+ words found in at most PROMPT_RARE
+    pages. Generic words and body text don't count: long prompts would match almost any body. The second page is
+    kept only if it is named too or scores within 60% of the first."""
+    seq, ws = prompt_words(prompt)
+    if len(ws) < 2:
+        return []
+    pages = [d for d in docs(v, "wiki") if not is_source(d)
+             and str(d["fm"].get("status", "")) not in ("superseded", "archived")]
+    head = {d["title"]: {w for w in set(d["fields"]["title"]) | set(d["fields"]["aliases"]) | set(d["fields"]["summary"])
+                         if keep_word(w)} for d in pages}
+    df = {}
+    for h in head.values():
+        for w in h:
+            df[w] = df.get(w, 0) + 1
+    n = len(pages)
+    found = []
+    for d in pages:
+        if d["title"] in skip:
+            continue
+        aliases = [words(x) for x in as_list(d["fm"].get("aliases"))]
+        titles = [words(d["title"]), words(str(d["fm"].get("title") or ""))]
+        named = (any(len(x) >= 2 and phrase_in(seq, x) for x in titles + aliases)
+                 or any(len(x) == 1 and len(x[0]) >= 3 and x[0] in ws for x in aliases))
+        hit = ws & head[d["title"]]
+        score = sum(math.log((n + 1) / df[w]) for w in hit)
+        rare = sum(1 for w in hit if df[w] <= PROMPT_RARE)
+        if named or (score >= PROMPT_MIN_SCORE and rare >= 2):
+            found.append((named, score, d))
+    found.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    if len(found) > 1 and not found[1][0] and found[1][1] < 0.6 * found[0][1]:
+        found = found[:1]
+    return [d for _, _, d in found]
+
+
+def prompt_recall(v: Path, prompt: str, sid: str) -> str:
+    """Context for one prompt: up to 2 compiled pages it is clearly about that this session hasn't been shown yet."""
+    picks = prompt_matches(v, prompt, skip=shown_pages(v, sid))[:PROMPT_MAX_PAGES]
+    if not picks:
+        return ""
+    mark_shown(v, sid, [d["title"] for d in picks])
+    lines = ["## Memex: pages that match this request"] + [recall_line(v / d["path"], d["fm"]) for d in picks]
+    lines.append("Read before relying on memory (`memex read \"<Page>\"`), and check what matters against the code.")
+    return "\n".join(lines)
 
 
 def hook_payload():
@@ -840,10 +1149,26 @@ def cmd_hook(a):
         return
     if a.event == "session-start":
         if not inside(cwd):
+            out = []
+            for part in (recall, lambda _: stall_line(v)):
+                try:
+                    out.append(part(cwd))
+                except Exception:
+                    pass
+            text = "\n".join(x for x in out if x)
+            if text:
+                print(text)
+                try:
+                    mark_shown(v, payload.get("session_id"), re.findall(r"^- \[\[([^\]]+)\]\]", text, re.M))
+                except OSError:
+                    pass
+        return
+    if a.event == "prompt":
+        if not inside(cwd) and ml.feature("recall", v).get("prompt", True):
             try:
-                text = recall(cwd)
+                text = prompt_recall(v, str(payload.get("prompt") or ""), payload.get("session_id"))
             except Exception:
-                text = ""
+                text = ""  # never get in the way of a prompt
             if text:
                 print(text)
         return
@@ -858,13 +1183,15 @@ def cmd_hook(a):
             context = session_context()
         else:
             try:
-                context = "\n\n".join(x for x in (pointer(), recall(cwd)) if x)
+                context = "\n\n".join(x for x in (pointer(), recall(cwd), stall_line(v)) if x)
             except Exception:
                 context = pointer()
         print(json.dumps({"context": context}))
 
 
 def main():
+    if sys.argv[1:2] == ["audit"]:  # its own argparse (tools/audit.py); REMAINDER can't pass leading --options
+        run_tool("audit.py", *sys.argv[2:])
     ap = argparse.ArgumentParser(prog="memex", description="Agent-neutral access to the owner's Memex vault.")
     ap.add_argument("--version", action="version", version=f"memex {VERSION}")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -874,8 +1201,11 @@ def main():
     s.set_defaults(fn=cmd_context)
     s = sub.add_parser("search")
     s.add_argument("terms", nargs="+")
-    s.add_argument("--in", dest="scope", choices=sorted(SCOPES), default="wiki")
-    s.add_argument("--limit", type=int, default=15)
+    s.add_argument("--in", dest="scope", choices=sorted(SCOPES), default="default",
+                   help="default: wiki/ plus inbox/ (captures not compiled yet)")
+    s.add_argument("--limit", type=int, default=5)
+    s.add_argument("--all-sources", action="store_true",
+                   help="also list source pages that a compiled page above already cites")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_search)
     s = sub.add_parser("read", help='a page by name, [[link]], alias or path; "Page#Heading" prints one section')
@@ -889,6 +1219,7 @@ def main():
     s.add_argument("--source", default="agent session")
     s.add_argument("--action", choices=["create", "update", "supersede", "delete"], default="create")
     s.add_argument("--target")
+    s.add_argument("--new", action="store_true", help="capture even if a page or inbox item looks like the same thing")
     s.set_defaults(fn=cmd_capture)
     s = sub.add_parser("file", help="move an inbox item into raw/<domain>/ (create-only), fixing links if renamed")
     s.add_argument("path")
@@ -912,6 +1243,9 @@ def main():
     s.add_argument("--quick", action="store_true")
     s.add_argument("--report", action="store_true")
     s.set_defaults(fn=lambda a: run_tool("lint.py", *(["--quick"] if a.quick else []), *(["--report"] if a.report else [])))
+    s = sub.add_parser("audit", add_help=False, help="is Memex earning its keep? (tools/audit.py; main() passes its args)")
+    s.add_argument("rest", nargs=argparse.REMAINDER)
+    s.set_defaults(fn=lambda a: run_tool("audit.py", *a.rest))
     s = sub.add_parser("init", help="create a new vault (setup.sh does this for you)")
     s.add_argument("path")
     s.add_argument("--name")
@@ -923,7 +1257,7 @@ def main():
     s.add_argument("--fix", action="store_true")
     s.set_defaults(fn=cmd_doctor)
     s = sub.add_parser("hook", help="agent hooks: session-start (repo recall), session-end (ledger), hermes")
-    s.add_argument("event", choices=["session-start", "session-end", "hermes"])
+    s.add_argument("event", choices=["session-start", "prompt", "session-end", "hermes"])
     s.add_argument("--agent", help="claude, codex or hermes (recorded in the session ledger)")
     s.set_defaults(fn=cmd_hook)
     s = sub.add_parser("outline", help="a page's summary and headings, with section sizes")
@@ -938,6 +1272,8 @@ def main():
     s.add_argument("--done", metavar="ID", help="mark a session harvested")
     s.add_argument("--result", choices=["filed", "skipped"], default="filed")
     s.add_argument("--skip-trivial", action="store_true", help="mark trivial and missing sessions as skipped")
+    s.add_argument("--skip-captured", action="store_true",
+                   help="mark sessions that already ran memex capture as skipped (their findings are in the inbox)")
     s.add_argument("--limit", type=int, default=20)
     s.set_defaults(fn=cmd_harvest)
     s = sub.add_parser("backup", help="write a git bundle of the vault (restore with git clone)")
