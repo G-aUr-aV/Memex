@@ -10,7 +10,7 @@ allowed-tools: Bash(memex *)
 
 Window and options: $ARGUMENTS. The default is the last 14 days, judging 8 lookups. If a window was given, rerun `memex audit <window>` and use that output instead of the one above.
 
-1. **Numbers.** Read the report above, including the "was … in <window>" trend against the previous recorded audit. Note what moved and what didn't.
+1. **Numbers.** Read the report above, including the combined and per-agent metrics, coverage and "was … in <window>" trend against the previous compatible recorded audit. Missing or unsupported transcripts, missing token usage and unfinished calls limit the conclusions; zero observed sessions does not prove an agent was unused. Token shares and capture latency are estimates. Note what moved and what didn't.
 
 2. **Judge a sample of real lookups.** The numbers can't tell whether a lookup helped.
    - `memex audit <window> --lookups` lists every `memex search` and `read` with its output, and the transcript path and tool id.

@@ -37,9 +37,9 @@ Memex/                      FRAMEWORK: code only. Clone it on every machine; pus
 | Guard | `hooks/guard.py` | blocks tool calls that break the ownership table, touch managed or owner-only files, endanger the vault's folder, write into the vault from a session outside it, or run owner-only commands | every agent's pre-tool hook (vault and global config) |
 | CLI | `tools/memex.py` | `path context search read outline related capture file rm commit ctx index lint harvest backup pull push remote move uninstall init sync doctor hook` | agents in any project, skills, hooks, the shell |
 | Index, lint, context | `tools/build_index.py`, `tools/lint.py`, `tools/context.py` | generated indexes; deterministic checks; live context for skills | `memex index`, `memex lint`, `memex ctx`, `memex commit` |
-| Audit | `tools/audit.py`, `skills/audit/` | deterministic metrics from Claude Code transcripts and the vault (use, retrieval, re-discovery, token share, capture latency, pipeline health, the vault's `meta/audit/search-benchmark.tsv`); `--record` keeps a machine-local trend in `.memex/audit.jsonl`; the skill adds a judged sample of lookups | `memex audit`, `/audit` |
+| Audit | `tools/audit.py`, `tools/audit_codex.py`, `skills/audit/` | deterministic metrics from Claude Code and Codex transcripts and the vault (use, retrieval, re-discovery, token share, capture latency, pipeline health, the vault's `meta/audit/search-benchmark.tsv`); `--record` keeps a machine-local trend in `.memex/audit.jsonl`; the skill adds a judged sample of lookups | `memex audit`, `/audit` |
 | Secrets | `tools/secretscan.py` | the patterns shared by lint, capture, pre-commit and session digests (`redact`) | — |
-| Session hooks | `memex hook session-start` / `prompt` / `session-end` (`tools/memex.py`), installed globally by `integrate.py` | start: repo-aware recall (pages whose `repo:`/`applies_to:` matches, playbooks first) plus the inbox stall alarm; prompt (Claude Code `UserPromptSubmit`): up to 2 compiled pages the prompt clearly names or is about, never one this session was already shown (`.memex/shown/`, machine-local); end: one ledger line in `.memex/sessions.jsonl`, no model call | Claude Code and Codex SessionStart/SessionEnd, Hermes `pre_llm_call` (recall only) |
+| Session hooks | `memex hook session-start` / `prompt` / `session-end` (`tools/memex.py`), installed globally by `integrate.py` | start: repo-aware recall (pages whose `repo:`/`applies_to:` matches, playbooks first) plus the inbox stall alarm; prompt (Claude Code and Codex `UserPromptSubmit`): up to 2 compiled pages the prompt clearly names or is about, never one this session was already shown (`.memex/shown/`, machine-local); end: one ledger line in `.memex/sessions.jsonl`, no model call | Claude Code and Codex SessionStart/UserPromptSubmit/SessionEnd, Hermes `pre_llm_call` (recall only) |
 | Harvest | `tools/sessions.py`, `skills/harvest/` | reads Claude Code and Codex JSONL transcripts into verbatim digests (one turn = prompt + the agent's last answer, plus files, commands and commits; secrets redacted), then the skill files and compiles them | `/harvest`, `/close`, `memex harvest` |
 | Retrieval | `tools/memex.py` (`rank`, `section`, `cmd_related`) | BM25 over weighted fields; section reads (`Page#Heading`), outlines and related pages for progressive disclosure | `memex search/read/outline/related`, skills |
 | Backup | `tools/vault.py` (`bundle`, `backup_age`) | verified git bundles of the vault, pruned to `backup.keep`; age reported by doctor and the session context | `memex backup` |
@@ -178,3 +178,15 @@ python3 tools/test_memex.py   # temp framework copy + vault; fake HOME and globa
 bash -n setup.sh tools/setup-qmd.sh
 ```
 CI (`.github/workflows/ci.yml`) runs these on macOS and Linux, plus a check that no knowledge is tracked. Python 3.9 uses Ubuntu 24.04 because `setup-python` has no Python 3.9 build for Ubuntu 26.04; Python 3.12 keeps `ubuntu-latest`, and both versions also run on `macos-latest`.
+
+## Audit adapters
+
+Claude Code and Codex share metrics after agent-specific transcript parsing. Codex supports direct shell
+calls, code-mode command literals, polling results and response usage records, with cumulative-counter
+fallback for older transcripts. Unknown shapes and incomplete calls are reported in coverage. Parsing
+never executes transcript text, and `--lookups` redacts excerpts. IDs are namespaced by agent; copied
+response/tool IDs from resumed history are counted once. Legacy cumulative counters are scoped to
+their session. Costs remain estimates and old Claude-only records are not used as combined-agent trends.
+
+See [[Codex Parity]] for scope, rollout and validation. Hook trust is owned by Codex; setup registers
+handlers without editing Codex trust records or bypassing review.
