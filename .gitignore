@@ -15,7 +15,10 @@
 # Obsidian, if this folder is ever opened as a vault (open the vault folder instead)
 /.obsidian/
 .trash/
+# Local editor, OS, and Python files
 .DS_Store
+/.idea/
 .claude/settings.local.json
+/.venv/
 __pycache__/
 *.pyc
