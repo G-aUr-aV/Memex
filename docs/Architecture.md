@@ -150,6 +150,8 @@ The vault's guard hook command is byte-identical to the global one (`memexlib.gu
 
 ## Sync
 
+Remote-error summaries surface SSH ownership, authentication, host-key and DNS errors ahead of Git's generic fatal message. The summary matches diagnostic text independently of the operating system and the file path SSH reports. A restricted execution environment can affect how SSH sees file ownership or whether Git can reach the network.
+
 ```mermaid
 sequenceDiagram
   participant S as Vault session start

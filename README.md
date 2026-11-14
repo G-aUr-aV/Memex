@@ -394,6 +394,8 @@ Memex/  (the framework)
 
 ## Machines, sync and backups
 
+If sync reports an SSH ownership error or DNS failure inside a sandbox, retry the affected `memex pull` or `memex push` from your normal terminal or through the agent's approved host-execution mechanism. This can distinguish a sandbox restriction from a host configuration problem.
+
 - **One vault per machine, by default.** Work knowledge stays on the work laptop, personal knowledge on the personal PC. The framework moves between them with `git pull`.
 - **Back the vault up.** With no remote, the disk holds the only copy. Run `memex backup --to /Volumes/<drive>/Memex`, or set `"backup": {"dir": …}` in `.memex/vault.json` and just run `memex backup`. It writes verified git bundles and keeps the newest 10. The session context and `memex doctor` remind you after 14 days (a recent push to your private remote counts too). To restore: `git clone <bundle> <folder>`, then `bash setup.sh --vault <folder>`.
 - **If the vault lives inside the framework folder** (the default when you run setup from there), move it out (`memex move <path>`) before deleting or re-cloning the framework. The guard stops agents from deleting that folder.

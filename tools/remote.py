@@ -37,7 +37,7 @@ def now() -> str:
 
 
 KEY_LINE = re.compile(r"denied|not found|could not resolve|timed out|rejected|does not appear|refused|"
-                      r"authentication|unreachable", re.I)
+                      r"authentication|unreachable|bad owner or permissions|host key verification failed", re.I)
 
 
 def short(text: str) -> str:

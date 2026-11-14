@@ -1173,6 +1173,29 @@ class TestBackup(Sandbox):
         self.assertNotEqual(self.memex("backup", "--to", str(self.V / "outputs")).returncode, 0)
 
 
+class TestRemoteDiagnostics(unittest.TestCase):
+    def test_ssh_cause_survives_generic_git_fatal(self):
+        sys.path.insert(0, str(SRC / "tools"))
+        import remote
+        for cause in (
+            "Bad owner or permissions on ssh_config",
+            "Host key verification failed.",
+            "git@example.com: Permission denied (publickey).",
+            "ssh: Could not resolve hostname example.com: Temporary failure in name resolution",
+        ):
+            with self.subTest(cause=cause):
+                stderr = cause + "\r\nfatal: Could not read from remote repository.\n"
+                self.assertEqual(remote.short(stderr), cause)
+
+    def test_hook_reason_and_fatal_fallback(self):
+        sys.path.insert(0, str(SRC / "tools"))
+        import remote
+        self.assertEqual(remote.short("Permission denied\nMemex refused unsafe push\nfatal: failed"),
+                         "Memex refused unsafe push")
+        self.assertEqual(remote.short("fatal: unknown failure\nPlease check access"),
+                         "fatal: unknown failure")
+
+
 class TestRemote(Sandbox):
     """Machine A (the sandbox vault) and machine B (another HOME) syncing through one bare repository."""
 
