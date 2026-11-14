@@ -29,6 +29,7 @@ import os
 import re
 import statistics
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -78,7 +79,7 @@ def parse(fn: Path, agent="claude") -> dict:
         return audit_codex.parse(fn, ts, MEMEX_CMD)
     s = {"agent": "claude", "file": str(fn), "subagent": "/subagents/" in str(fn), "sid": None,
          "cwd": None, "first": None, "last": None, "usage": {}, "tools": [], "recall": "",
-         "stall": False, "block_chars": 0, "recognized": False, "warnings": []}
+         "recalls": [], "stall": False, "block_chars": 0, "recognized": False, "warnings": []}
     uses, results = {}, {}
     for line in audit_codex.lines(fn):
         try:
@@ -101,6 +102,7 @@ def parse(fn: Path, agent="claude") -> dict:
                 c = a.get("content") or ""
                 if "## Memex: what the owner's knowledge base says" in c or "## Memex: pages that match this request" in c:
                     s["recall"] += "\n" + c
+                    s["recalls"].append((when, c))
                 if "Memex inbox looks stalled" in c:
                     s["stall"] = True
             elif a.get("type") == "instructions":
@@ -204,6 +206,14 @@ def pct(a, b):
     return round(100.0 * a / b, 1) if b else None
 
 
+READ_HEADER = re.compile(r"<!-- ([^\n#]+?\.md)(?:#[^\n]*)? -->")  # the first line `memex read` prints on success
+
+
+def clean(s: str) -> str:
+    """Text taken from a transcript, with secrets replaced, for the terminal, --json and the saved report."""
+    return redact(str(s))[0]
+
+
 def measure(sessions, v: Path) -> dict:
     work = [s for s in sessions if s["kind"] == "work"]
     main = {}
@@ -229,16 +239,26 @@ def measure(sessions, v: Path) -> dict:
     for ss in main.values():
         ops = [op for s in ss for t in s["tools_unique"] for op in operations(t)]
         followed += "search" in ops and "read" in ops[ops.index("search") + 1:]
-    # recall: did the session open a page it was given?
+    # recall: did the session read a page after being shown it? Only a `memex read` that printed the page counts:
+    # not a search, a failed read, a read before the page was shown, or the name appearing in another command.
     recalled = [ss for ss in main.values() if any(s["recall"] for s in ss)]
     opened, shown, used = 0, {}, {}
     for ss in recalled:
-        pages = set(re.findall(r"\[\[([^\]]+)\]\]", "\n".join(s["recall"] for s in ss)))
-        asked = " ".join(t["cmd"] for s in ss for t in s["tools"] if set(operations(t)) & {"read", "search"})
-        opened += any(p in asked for p in pages)
-        for p in pages:
+        first = {}  # page -> when this session was first shown it
+        for s in ss:
+            for when, text in s.get("recalls") or [(None, s["recall"])]:
+                for p in re.findall(r"\[\[([^\]]+)\]\]", text):
+                    first[p] = min(first.get(p, when or 0), when or 0)
+        read = set()
+        for s in ss:
+            for t in s["tools"]:
+                if "read" in operations(t) and not t.get("pending"):
+                    read |= {p for p in (Path(x).stem for x in READ_HEADER.findall(t["text"]))
+                             if p in first and (t["ts"] or 0) >= first[p]}
+        opened += bool(read)
+        for p in first:
             shown[p] = shown.get(p, 0) + 1
-            used[p] = used.get(p, 0) + (p in asked)
+            used[p] = used.get(p, 0) + (p in read)
     # re-discovery: a capture whose title says what an earlier capture (from another session) already said
     recaptured, clusters = 0, {}
     earlier = []
@@ -287,14 +307,14 @@ def measure(sessions, v: Path) -> dict:
         "searches": len(searches), "queries": queries, "reads": read_count,
         "captures_per_read": round(capture_count / read_count, 1) if read_count else None,
         "zero_hit_pct": pct(zero, queries), "partial_only_pct": pct(partial, queries),
-        "zero_hit_queries": sorted(missed.items(), key=lambda x: (-x[1], x[0]))[:8],
+        "zero_hit_queries": sorted(((clean(q), n) for q, n in missed.items()), key=lambda x: (-x[1], x[0]))[:8],
         "search_then_read_sessions": followed,
         "recall_sessions": len(recalled), "recall_opened_pct": pct(opened, len(recalled)),
-        "recall_unopened": sorted(((p, n) for p, n in shown.items() if n >= 3 and not used[p]),
+        "recall_unopened": sorted(((clean(p), n) for p, n in shown.items() if n >= 3 and not used[p]),
                                   key=lambda x: (-x[1], x[0]))[:5],
         "stall_alarms": sum(1 for ss in main.values() for s in ss if s["stall"]),
         "recaptured": recaptured,
-        "recaptured_topics": sorted(clusters.items(), key=lambda x: -x[1])[:5],
+        "recaptured_topics": sorted(((clean(t), n) for t, n in clusters.items()), key=lambda x: -x[1])[:5],
         "memex_token_pct": pct(memex_in, total_in), "memex_output_pct": pct(memex_out, total_out),
         "capture_seconds_median": round(statistics.median(gaps), 1) if gaps else None,
         "capture_minutes_total": round(sum(gaps) / 60, 1),
@@ -348,30 +368,67 @@ def hot_files(sessions) -> dict:
         if len(keys) < HOT_MIN_SESSIONS:
             continue
         floor = max(3, HOT_SHARE * len(keys))
-        top = sorted(((p, len(k)) for (r, p), k in seen.items() if r == repo and len(k) >= floor),
+        top = sorted(((clean(p), len(k)) for (r, p), k in seen.items() if r == repo and len(k) >= floor),
                      key=lambda x: (-x[1], x[0]))[:HOT_TOP]
         if top:
             out[repo] = {"sessions": len(keys), "files": top}
     return out
 
 
-def bench(v: Path):
+def bench_rows(v: Path):
+    """(query, expected page title or "-", kind) per benchmark line. A third column names the kind of query
+    (exact, alias, paraphrase, superseded, …); "-" as the page means the wiki has no answer (kind "none")."""
     f = v / "meta" / "audit" / "search-benchmark.tsv"
-    if not f.exists():
-        return None
-    rows = [l.split("\t") for l in f.read_text(encoding="utf-8").splitlines() if "\t" in l and not l.startswith("#")]
-    hit1 = hit3 = 0
-    misses = []
-    for query, want in ((q.strip(), w.strip()) for q, w in rows):
-        _, hits, _ = mx.rank(v, query, "default")
+    rows = []
+    for line in f.read_text(encoding="utf-8").splitlines() if f.exists() else []:
+        cols = [c.strip() for c in line.split("\t")]
+        if line.startswith("#") or len(cols) < 2 or not cols[0] or not cols[1]:
+            continue
+        rows.append((cols[0], cols[1], "none" if cols[1] == "-" else (cols[2] if len(cols) > 2 and cols[2] else "known")))
+    return rows
+
+
+def bench_engine(v: Path, rows, engine: str):
+    """One engine over the benchmark: hits in the top 1 and 3, by kind; no-answer queries it answered anyway
+    without the "may not be in Memex" warning; and how long a search took. None if the engine fell back."""
+    hit1 = hit3 = false_pos = 0
+    misses, kinds, took = [], {}, []
+    for query, want, kind in rows:
+        start = time.perf_counter()
+        terms, hits, _, fallback = mx.search(v, query, "default", engine)
         hits, _ = mx.fold_covered(hits)
+        took.append(time.perf_counter() - start)
+        if fallback:
+            return {"unavailable": fallback}
+        if want == "-":
+            false_pos += not mx.weak(terms, hits)
+            continue
         titles = [d["title"] for _, d in hits]
         r = titles.index(want) + 1 if want in titles else None
+        k = kinds.setdefault(kind, [0, 0, 0])
+        k[0] += r == 1
+        k[1] += bool(r and r <= 3)
+        k[2] += 1
         hit1 += r == 1
         hit3 += bool(r and r <= 3)
         if not (r and r <= 3):
             misses.append(f"{query!r} → {want} (rank {r or '-'})")
-    return {"queries": len(rows), "hit1": hit1, "hit3": hit3, "misses": misses}
+    took.sort()
+    return {"queries": sum(w != "-" for _, w, _ in rows), "hit1": hit1, "hit3": hit3, "misses": misses,
+            "kinds": kinds, "no_answer": sum(w == "-" for _, w, _ in rows), "false_positives": false_pos,
+            "median_ms": round(statistics.median(took) * 1000), "p95_ms": round(took[int(0.95 * (len(took) - 1))] * 1000)}
+
+
+def bench(v: Path):
+    """Keyword search over the vault's benchmark, and hybrid search over the same queries on the same vault when
+    it is switched on or a vector index exists."""
+    rows = bench_rows(v)
+    if not rows:
+        return None
+    b = bench_engine(v, rows, "keyword")
+    if ml.feature("search", v)["engine"] == "hybrid" or (v / ".memex" / "vectors.json").exists():
+        b["hybrid"] = bench_engine(v, rows, "hybrid")
+    return b
 
 
 def health(v: Path) -> dict:
@@ -434,7 +491,7 @@ def render(r: dict) -> str:
            f"- Search queries: {m['queries']}; no hits: {val(m['zero_hit_pct'], '%')}{trend('zero_hit_pct', '%')}; "
            f"only partial matches: {val(m['partial_only_pct'], '%')}{trend('partial_only_pct', '%')}; sessions that "
            f"read a page after searching: {m['search_then_read_sessions']}",
-           f"- Session-start recall: {m['recall_sessions']} sessions; a recalled page opened later: "
+           f"- Recall: {m['recall_sessions']} sessions were shown pages; read one of them afterwards: "
            f"{val(m['recall_opened_pct'], '%')}{trend('recall_opened_pct', '%')}; stall alarms shown: {m['stall_alarms']}"]
     if m.get("zero_hit_queries"):
         out.append("- Searched for and not found: " + "; ".join(f"{q!r}" + (f" (x{n})" if n > 1 else "")
@@ -442,10 +499,22 @@ def render(r: dict) -> str:
     if m.get("recall_unopened"):
         out.append("- Shown at session start or on a prompt, never opened: "
                    + ", ".join(f"[[{p}]] ({n} sessions)" for p, n in m["recall_unopened"]))
+    def bench_line(e):
+        kinds = "; ".join(f"{k} {h1}/{h3}/{n}" for k, (h1, h3, n) in sorted(e["kinds"].items()))
+        return ((f"; by kind (top 1/top 3/queries): {kinds}" if len(e["kinds"]) > 1 else "")
+                + (f"; no-answer queries answered without a warning: {e['false_positives']}/{e['no_answer']}"
+                   if e["no_answer"] else "")
+                + f"; median {e['median_ms']} ms, p95 {e['p95_ms']} ms"
+                + (f"; misses: {'; '.join(e['misses'][:5])}" if e["misses"] else ""))
     if b:
         out.append(f"- Search benchmark: hit@1 {b['hit1']}/{b['queries']}{trend('bench_hit1')}, hit@3 "
-                   f"{b['hit3']}/{b['queries']}{trend('bench_hit3')}"
-                   + (f"; misses: {'; '.join(b['misses'][:5])}" if b["misses"] else ""))
+                   f"{b['hit3']}/{b['queries']}{trend('bench_hit3')}" + bench_line(b))
+        hy = b.get("hybrid")
+        if hy and hy.get("unavailable"):
+            out.append(f"- Hybrid search, same queries: not run ({hy['unavailable']})")
+        elif hy:
+            out.append(f"- Hybrid search, same queries: hit@1 {hy['hit1']}/{hy['queries']}, hit@3 "
+                       f"{hy['hit3']}/{hy['queries']}" + bench_line(hy))
     out += ["", "## Re-discovery",
             f"- Captures repeating an earlier capture from another session: {m['recaptured']}{trend('recaptured')}"
             + (f"; top: {', '.join(f'{t} (x{n})' for t, n in m['recaptured_topics'])}" if m["recaptured_topics"] else ""),
@@ -477,7 +546,9 @@ def render(r: dict) -> str:
             f"system pages verified against code: {h['system_pages_verified']}/{h['system_pages']}",
             f"- hot.md last rewritten: {h['hot_md_rewritten'] or 'never'}; backup: "
             + ("none" if h["backup_age_days"] is None else f"{h['backup_age_days']} days old")]
-    out += ["", "Whether lookups actually helped needs a reader: `memex audit --lookups` lists them for /audit to judge."]
+    out += ["", "Queries that found nothing, pages shown but not read and the most-opened files are what sessions did, "
+            "listed as leads to check: the audit can't see why. Whether lookups actually helped needs a reader: "
+            "`memex audit --lookups` lists them for /audit to judge."]
     return "\n".join(out)
 
 

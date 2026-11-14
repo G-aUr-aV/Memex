@@ -12,7 +12,7 @@ from collections import defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from memexlib import domain_specs, frontmatter, iter_files, rel, require_vault, special  # noqa: E402
+from memexlib import domain_specs, frontmatter, iter_files, rel, require_vault, special, write_atomic  # noqa: E402
 
 ROOT = require_vault()
 SPECS = domain_specs(ROOT)
@@ -60,7 +60,7 @@ def line(pg):
 def write(path: Path, content: str):
     old = path.read_text(encoding="utf-8") if path.exists() else None
     if old != content:
-        path.write_text(content, encoding="utf-8")
+        write_atomic(path, content)
         return True
     return False
 

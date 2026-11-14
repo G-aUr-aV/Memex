@@ -13,7 +13,7 @@ A vault holds three kinds of files:
   vault config .memex/vault.json (name, domains, identity) · .memex/local.md (vault-only rules)
                · .memex/domains.json + .memex/domains/<name>.md (vault-only domains)                     committed
   machine      .memex/remote.json (the private remote, if attached) · state.json · sessions.jsonl ·
-               audit.jsonl · shown/ · backup.json · backup/                                                        git-excluded
+               audit.jsonl · shown/ · backup.json · backup/ · vectors.json (hybrid search)                   git-excluded
   managed      rendered from the framework on every sync (see outputs()): excluded from the vault's git
                through .git/info/exclude and protected by the guard. Change them in the framework.
 """
@@ -229,7 +229,7 @@ def write_exclude(v: Path, outs: dict):
         if entry not in lines:
             lines.append(entry)
     lines += ["/.memex/state.json", "/.memex/backup/", "/.memex/sessions.jsonl", "/.memex/audit.jsonl",
-              "/.memex/shown/", "/.memex/backup.json", "/.memex/remote.json"]
+              "/.memex/shown/", "/.memex/backup.json", "/.memex/remote.json", "/.memex/vectors.json"]
     ex = git_dir / "info" / "exclude"
     text = ex.read_text(encoding="utf-8") if ex.exists() else ""
     text = re.sub(re.escape(EXCLUDE_BEGIN) + r".*?" + re.escape(EXCLUDE_END) + r"\n?", "", text, flags=re.S).rstrip("\n")
@@ -316,7 +316,7 @@ def sync(v: Path, only_if_stale=False) -> dict:
     state = {"version": VERSION, "framework": str(FW), "framework_sha": ml.framework_sha(), "input_hash": h,
              "synced_at": datetime.datetime.now().isoformat(timespec="seconds"), "dirs": MANAGED_DIRS, "files": files}
     state_path(v).parent.mkdir(parents=True, exist_ok=True)
-    state_path(v).write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    ml.write_atomic(state_path(v), json.dumps(state, indent=2) + "\n")
     tool(v, "build_index.py")
     return result
 
@@ -831,7 +831,7 @@ def detach_vault(v: Path):
         if p.is_symlink() or p.is_file():
             p.unlink()
             prune_empty(v, p.parent)
-    for name in ("state.json", "sessions.jsonl", "audit.jsonl", "backup.json", "remote.json"):
+    for name in ("state.json", "sessions.jsonl", "audit.jsonl", "backup.json", "remote.json", "vectors.json"):
         (v / ".memex" / name).unlink(missing_ok=True)
     shutil.rmtree(v / ".memex" / "shown", ignore_errors=True)
     ex = v / ".git" / "info" / "exclude"

@@ -213,7 +213,8 @@ sequenceDiagram
 
 - **Recall at session start**:
   - works in any repo whose project or system page has `repo:` (git remote `owner/name` or folder name);
-  - prints at most 15 lines, and nothing at all when there's no match.
+  - prints at most 15 lines, and nothing at all when there's no match;
+  - when several pages match, shows up to `recall.max_pages` (3): playbooks first, then the closest repo match, then the most recently updated. A `recall:` line over 240 characters is cut at a word and ends in `…`, and a block over the line budget says how many lines were cut, so a cut command never looks complete.
 - **Session ledger at session end**:
   - records which session ran where, without a model call and in well under a second;
   - skips vault sessions and the folders listed in `harvest.exclude`.
@@ -221,8 +222,10 @@ sequenceDiagram
   two relevant compiled pages and suppresses pages already shown in that session; turns the harness
   starts, such as a subagent's report, get none. Codex requires review
   of new hook definitions in `/hooks`; setup preserves that trust boundary.
-- **`memex audit`** reads both agents' local transcripts, with combined and per-agent metrics, and names what
-  to fix: queries that found nothing, recalled pages nobody opened, and each repo's most-opened files. Codex direct
+- **`memex audit`** reads both agents' local transcripts, with combined and per-agent metrics, and lists leads
+  to check: queries that found nothing, recalled pages nobody read afterwards, and each repo's most-opened files.
+  A recalled page counts as read only when `memex read` printed it after it was shown, and text taken from
+  transcripts is redacted in the terminal, `--json` and the saved report. Codex direct
   shell calls, code-mode wrappers, asynchronous results and token usage are normalized without executing
   transcript text. Coverage and incomplete calls are reported; token shares are estimates. See
   [Claude Code and Codex parity](docs/Codex%20Parity.md) for the implementation and validation plan.
@@ -231,7 +234,14 @@ sequenceDiagram
   - files it as a raw source and compiles only what lasts: root causes, decisions, gotchas, commands that worked, your stated preferences;
   - skips trivial sessions (`harvest.min_tool_calls`).
 
-Settings live in `.memex/vault.json` (`recall`, `harvest`, `backup`).
+Settings live in `.memex/vault.json` (`recall`, `harvest`, `backup`, `search`).
+
+**Hybrid search (optional).** `memex search` ranks by keywords (BM25). It can also rank by meaning and fuse the two lists with reciprocal rank fusion, so a paraphrase finds a page that shares none of its words. The embeddings come from a model on this machine through [Ollama](https://ollama.com); the URL must be `localhost`, so no page text or query leaves it.
+1. `ollama pull embeddinggemma`, then `memex index --vectors` (one vector per wiki page, kept in the machine-local `.memex/vectors.json`).
+2. Compare on your own vault before switching: add queries to `meta/audit/search-benchmark.tsv` (`query<TAB>page title<TAB>kind`, with `-` as the page for a query the wiki can't answer), and `memex audit` reports both engines' top-1 and top-3 hits, no-answer queries answered anyway, and median and p95 time. Try one query with `memex search --engine hybrid <terms>`.
+3. If hybrid finds what keywords miss, loses nothing and is fast enough, set `"search": {"engine": "hybrid"}` in `.memex/vault.json`.
+
+Whenever the model can't be reached or the vector index is out of date, search says so on stderr and returns the keyword results. Exact titles and aliases still come first, superseded and archived pages go below current ones, and when even the best page has under half of the query's terms the result says the query may not be in Memex. Recall and the capture duplicate gate always use keywords.
 
 ## How it works
 
@@ -316,7 +326,7 @@ Works the same in every agent, in any folder, and in your shell.
 
 | Command | What it does |
 |---|---|
-| `memex search <terms> [--in all] [--json]` | BM25-ranked search: title and aliases first, then summary, headings, body (`--in all` adds raw sources, journal, notes) |
+| `memex search <terms> [--in all] [--json] [--engine keyword\|hybrid]` | BM25-ranked search: title and aliases first, then summary, headings, body (`--in all` adds raw sources, journal, notes); `hybrid` also ranks wiki pages by meaning (see *Hybrid search*) |
 | `memex read "<Page>"` · `memex read "<Page>#<Heading>"` | a page by name, `[[link]]`, alias or path, or just one section |
 | `memex outline "<Page>"` · `memex related "<Page>"` | headings with sizes · backlinks, outlinks, cited sources and pages citing the same sources |
 | `memex capture --title T --domain D --why W` | drop a note (stdin) into `inbox/`; `--action update\|supersede\|delete --target P` queues a change |
@@ -329,7 +339,7 @@ Works the same in every agent, in any folder, and in your shell.
 | `memex context` | what a session starts with; re-renders the vault if the framework changed |
 | `memex sync [--check]` | re-render the framework's files into the vault |
 | `memex doctor [--fix]` | check identity, hooks, remotes, history and managed files; `--fix` repairs them |
-| `memex index` · `memex lint [--report]` · `memex ctx <skill>` | indexes, health check, live context for skills |
+| `memex index [--vectors]` · `memex lint [--report]` · `memex ctx <skill>` | indexes, health check, live context for skills |
 | `memex init <path>` · `memex path` | create a vault (setup does this) · print the vault path |
 | `memex remote set <url>` · `memex remote remove` | **you only**: attach your private repo (public ones are refused), or go local-only again |
 | `memex move <path>` · `memex uninstall [--delete-vault --confirm NAME]` | **you only**: move the vault and re-point everything · remove Memex from this machine |

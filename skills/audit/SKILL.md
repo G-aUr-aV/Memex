@@ -10,10 +10,11 @@ allowed-tools: Bash(memex *)
 
 Window and options: $ARGUMENTS. The default is the last 14 days, judging 8 lookups. If a window was given, rerun `memex audit <window>` and use that output instead of the one above.
 
-1. **Numbers.** Read the report above, including the combined and per-agent metrics, coverage and "was … in <window>" trend against the previous compatible recorded audit. Missing or unsupported transcripts, missing token usage and unfinished calls limit the conclusions; zero observed sessions does not prove an agent was unused. Token shares and capture latency are estimates. Note what moved and what didn't. Three lists in the report name fixes; carry each non-empty one into the verdict, and don't edit wiki pages for them here:
-   - *Searched for and not found*: knowledge sessions wanted that the wiki lacks, or a page missing an alias.
-   - *Shown, never opened*: the page's `recall:` or summary doesn't say why a session there needs it, or its `repo:` / `applies_to:` is too broad.
-   - *Most-opened files*: when a repo's playbook or system page doesn't name these files and what each is for, sessions keep rediscovering them.
+1. **Numbers.** Read the report above, including the combined and per-agent metrics, coverage and "was … in <window>" trend against the previous compatible recorded audit. Missing or unsupported transcripts, missing token usage and unfinished calls limit the conclusions; zero observed sessions does not prove an agent was unused. Token shares and capture latency are estimates. Note what moved and what didn't. Three lists in the report are leads: each says what sessions did, not why. Carry each non-empty one into the verdict as something to check, with the possible causes below, and don't edit wiki pages for them here:
+   - *Searched for and not found*: the wiki may lack that knowledge, or a page may be missing an alias.
+   - *Shown, never opened*: the session may have needed nothing beyond the recalled line (a `recall:` command is usable without a read); or the page's `recall:` or summary doesn't say why a session there needs it; or its `repo:` / `applies_to:` is too broad.
+   - *Most-opened files*: if the repo's playbook or system page doesn't name these files and what each is for, sessions may be rediscovering them.
+   - *Hybrid search, same queries* (when present): hybrid is worth making the default only if it finds queries the keyword line misses, loses none the keyword line finds, answers no more no-answer queries, and its p95 stays within what the owner accepts.
 
 2. **Judge a sample of real lookups.** The numbers can't tell whether a lookup helped.
    - `memex audit <window> --lookups` lists every `memex search` and `read` with its output, and the transcript path and tool id.

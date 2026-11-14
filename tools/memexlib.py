@@ -61,6 +61,16 @@ def save_config(cfg: dict):
     p.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
 
 
+def write_atomic(path: Path, text: str):
+    """Replace a file in one step, so a reader or a concurrent `git add` never sees it half-written. The temporary
+    copy goes in the repo's .git folder (same disk, never staged) when there is one."""
+    path = Path(path)
+    home = next((p / ".git" for p in path.parents if (p / ".git").is_dir()), path.parent)
+    tmp = home / f"memex-{os.getpid()}-{path.name}.tmp"
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 # Variables git sets for hooks that pin a command to one repo; drop them before touching another repo.
 GIT_LOCATION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX", "GIT_OBJECT_DIRECTORY",
                      "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE")
@@ -177,6 +187,9 @@ FEATURE_DEFAULTS = {
     # repo-aware recall printed at the start of agent sessions in other repos
     # stall_hours: an inbox capture older than this means the inbox run has stopped; say so at session start
     "recall": {"enabled": True, "max_pages": 3, "stall_hours": 24},
+    # memex search: "keyword" (BM25) or "hybrid" (BM25 fused with local embeddings; see tools/vectors.py). Hybrid
+    # falls back to keyword whenever the local model can't be reached. url must be on this machine.
+    "search": {"engine": "keyword", "url": "http://127.0.0.1:11434", "model": "embeddinggemma", "timeout": 3},
 }
 
 

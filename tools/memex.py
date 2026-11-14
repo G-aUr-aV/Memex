@@ -5,8 +5,10 @@
   memex context [--brief]                     what a session starts with: hot.md, recent log, inbox, lint age
                                               (also re-renders the vault's managed files if the framework changed)
   memex search <terms…> [--in wiki|inbox|raw|journal|notes|all] [--limit N] [--all-sources] [--json]
-                                              BM25-ranked; default scope is wiki/ plus inbox/, 5 hits; source pages
-                                              a compiled page above already cites are folded away
+               [--engine keyword|hybrid]      BM25-ranked; default scope is wiki/ plus inbox/, 5 hits; source pages
+                                              a compiled page above already cites are folded away. "hybrid" fuses
+                                              that ranking with local embeddings (tools/vectors.py) and falls
+                                              back to keywords by itself
   memex read <page name | [[link]] | alias | vault path>[#Heading]      a page, or just one section
   memex outline <page> · memex related <page>          headings with sizes · links in and out, co-cited pages
   memex capture --title T [--domain D] [--why W] [--project P] [--source S]
@@ -17,7 +19,7 @@
   memex commit "<op>: <title>" [--force]      rebuild indexes, lint --quick, commit the vault (then push, if
                                               the owner attached a private remote)
   memex ctx <ingest|inbox|lint|today|close|weekly>   live context for a skill
-  memex index · memex lint [--quick|--report]
+  memex index [--vectors] · memex lint [--quick|--report]
   memex audit [--days N | --since D --until D] [--json] [--lookups] [--report] [--record]   is Memex earning its
                                               keep? use, retrieval, re-discovery, cost, latency, pipeline health
   memex harvest [--digest ID | --done ID | --skip-trivial | --skip-captured]   sessions recorded at session end
@@ -330,12 +332,12 @@ def compiled_into(v: Path, d) -> str:
     return ""
 
 
-def rank(v: Path, query: str, scope="default"):
+def rank(v: Path, query: str, scope="default", corpus=None):
     """BM25 over weighted fields (title and aliases ×3, summary ×2, headings ×1.5, body ×1), scaled by prior().
     A page whose title or an alias is exactly the query comes first. Pages that contain every term come next; if
     none do, pages with some of the terms are returned instead."""
     terms = list(dict.fromkeys(words(query)))
-    corpus = list(docs(v, scope))
+    corpus = list(docs(v, scope)) if corpus is None else corpus
     if not terms or not corpus:
         return terms, [], False
     n = len(corpus)
@@ -361,6 +363,62 @@ def rank(v: Path, query: str, scope="default"):
     return terms, [(round(s, 3), d) for _, s, d in pool], partial
 
 
+RRF_K, FUSE_DEPTH, INLINE_STALE = 60, 50, 20
+RETIRED = ("superseded", "archived")
+
+
+def fuse(v: Path, query: str, corpus, hits, cfg):
+    """Reciprocal rank fusion of the keyword hits with the wiki pages nearest in meaning: each list gives a page
+    1/(RRF_K + rank), and a page in both gets both. Ties go to the keyword order. Raises vectors.Unavailable."""
+    import vectors
+    by_path = {d["path"]: d for d in corpus}
+    vecs, _ = vectors.refresh(v, cfg, corpus, inline=INLINE_STALE)
+    near = sorted(((cos * prior(by_path[p]), p) for cos, p in vectors.nearest(cfg, query, vecs)),
+                  key=lambda x: (-x[0], x[1]))[:FUSE_DEPTH]
+    keyword = [d["path"] for _, d in hits[:FUSE_DEPTH]]
+    score = {}
+    for ranked in (keyword, [p for _, p in near]):
+        for i, p in enumerate(ranked):
+            score[p] = score.get(p, 0.0) + 1.0 / (RRF_K + i + 1)
+    place = {p: i for i, p in enumerate(keyword)}
+    order = sorted(score, key=lambda p: (-score[p], place.get(p, FUSE_DEPTH), p))
+    return [(round(score[p], 4), by_path[p]) for p in order]
+
+
+def search(v: Path, query: str, scope="default", engine=None):
+    """What `memex search` shows: (terms, hits, partial, note). The engine is `search.engine` in .memex/vault.json
+    unless given. "hybrid" fuses rank() with local embeddings and falls back to rank() alone, saying why in note,
+    whenever they can't be used. Superseded and archived pages go below current ones; an exact title or alias
+    still comes first. Recall and the capture duplicate gate keep using rank() directly."""
+    cfg = ml.feature("search", v)
+    corpus = list(docs(v, scope))
+    terms, hits, partial = rank(v, query, scope, corpus)
+    note = ""
+    if (engine or cfg["engine"]) == "hybrid" and terms and "wiki" in SCOPES[scope]:  # only wiki pages have vectors
+        import vectors
+        try:
+            hits = fuse(v, query, corpus, hits, cfg)
+        except vectors.Unavailable as e:
+            note = f"hybrid search unavailable ({e}); used keyword search"
+    qwords = words(query)
+    hits.sort(key=lambda h: (qwords not in h[1]["names"], str(h[1]["fm"].get("status") or "") in RETIRED))
+    return terms, hits, partial, note
+
+
+def term_cover(d, terms):
+    """(found, asked): how many of the query's terms a page contains, leaving out stop words."""
+    asked = [t for t in terms if t not in STOP] or list(terms)
+    return sum(1 for t in asked if any(t in d["fields"][f] for f in FIELD_WEIGHTS)), len(asked)
+
+
+def weak(terms, hits) -> bool:
+    """True when even the best hit has under half of the query's terms: Memex probably doesn't cover it."""
+    if not hits:
+        return True
+    found, asked = term_cover(hits[0][1], terms)
+    return 2 * found < asked
+
+
 def snippet(body: str, terms) -> str:
     best, score = "", 0
     for line in body.splitlines():
@@ -374,22 +432,31 @@ def snippet(body: str, terms) -> str:
 def cmd_search(a):
     v = V()
     query = " ".join(a.terms)
-    terms, hits, partial = rank(v, query, a.scope)
+    terms, hits, partial, fallback = search(v, query, a.scope, a.engine)
     if not terms:
         fail("give at least one search term")
+    if fallback:
+        print(f"memex: {fallback}", file=sys.stderr)
     folded = 0
     if not a.all_sources:
         hits, folded = fold_covered(hits)
     if a.json:
         print(json.dumps([{"path": d["path"], "title": d["title"], "summary": str(d["fm"].get("summary") or ""),
                            "lines": d["body"].count("\n") + 1, "score": s, "snippet": snippet(d["body"], terms),
-                           "inbox": d["path"].startswith("inbox/")}
+                           "inbox": d["path"].startswith("inbox/"), "terms_found": term_cover(d, terms)[0],
+                           "terms_asked": term_cover(d, terms)[1]}
                           for s, d in hits[:a.limit]], indent=2))
         return
     if not hits:
         print(f"No matches for {query!r} in {', '.join(SCOPES[a.scope])}/. Try synonyms, fewer terms, or --in all.")
         return
-    note = " (no page has every term; showing partial matches)" if partial else ""
+    note = ""
+    if partial and weak(terms, hits):
+        found, asked = term_cover(hits[0][1], terms)
+        note = (f" (no page has every term; the closest has only {found} of {asked}, so this may not be in Memex: "
+                "check the summaries before relying on these)")
+    elif partial:
+        note = " (no page has every term; showing partial matches)"
     more = f" (--limit {len(hits)} for all)" if len(hits) > a.limit else ""
     fold = (f"; {folded} source page(s) folded into the pages that cite them (--all-sources lists them)"
             if folded else "")
@@ -397,7 +464,12 @@ def cmd_search(a):
     for _, d in hits[:a.limit]:
         summary = str(d["fm"].get("summary") or d["fm"].get("why") or "")
         tag = " [inbox: captured, not compiled or reviewed yet]" if d["path"].startswith("inbox/") else ""
-        print(f"- {d['path']} ({d['body'].count(chr(10)) + 1} lines){tag}" + (f": {summary}" if summary else ""))
+        status = str(d["fm"].get("status") or "")
+        if status in RETIRED:
+            by = " ".join(as_list(d["fm"].get("superseded_by")))
+            tag += f" [{status}" + (f": see {by}" if by else "") + "]"
+        size = f"{d['body'].count(chr(10)) + 1} lines" + (", %d/%d terms" % term_cover(d, terms) if partial else "")
+        print(f"- {d['path']} ({size}){tag}" + (f": {summary}" if summary else ""))
         s = snippet(d["body"], terms)
         if s and s != summary:
             print(f"    {s}")
@@ -555,7 +627,7 @@ def cmd_capture(a):
         fail(f"--domain must be one of: {', '.join(domains)}")
     if a.action != "create" and not a.target:
         fail(f"--action {a.action} needs --target \"<Page>\"")
-    found = secret_hits("\n".join([title, a.why or "", body]))
+    found = secret_hits("\n".join([title, a.why or "", a.source or "", a.project or "", a.target or "", body]))
     if found:
         fail(f"capture refused: possible {', '.join(found)}. Remove it (store a pointer such as "
              "'1Password: <item>') and retry.")
@@ -624,6 +696,14 @@ def cmd_file(a):
     dest = v / "raw" / a.domain / name
     if dest.exists():
         fail(f"{rel(dest)} already exists; raw/ is create-only, so pick another name")
+    try:
+        from secretscan import hits as secret_hits
+        found = secret_hits(src.read_text(encoding="utf-8"))
+    except UnicodeDecodeError:
+        found = []  # not text: nothing the patterns can read
+    if found:
+        fail(f"file refused: possible {', '.join(found)} in {rel(src)}. raw/ can't be edited afterwards, so the item "
+             "stays in inbox/: replace the value there with [REDACTED: <kind>], then file it again.")
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(src), str(dest))
     fixed = relink(v, src.stem, dest.stem) if dest.stem != src.stem else []
@@ -696,6 +776,23 @@ def cmd_commit(a):
 def run_tool(name, *args):
     v = V()
     r = subprocess.run([sys.executable, str(TOOLS / name), *args], cwd=v, env={**os.environ, "MEMEX_VAULT": str(v)})
+    sys.exit(r.returncode)
+
+
+def cmd_index(a):
+    v = V()
+    r = subprocess.run([sys.executable, str(TOOLS / "build_index.py")], cwd=v,
+                       env={**os.environ, "MEMEX_VAULT": str(v)})
+    cfg = ml.feature("search", v)
+    if r.returncode == 0 and (a.vectors or cfg["engine"] == "hybrid"):
+        import vault as vaultmod
+        import vectors
+        try:
+            vaultmod.sync(v, only_if_stale=True)  # keeps .memex/vectors.json out of the vault's git
+            vecs, new = vectors.refresh(v, cfg, list(docs(v, "wiki")))
+            print(f"vectors: {len(vecs)} wiki pages, {new} embedded now ({cfg['model']})")
+        except (vectors.Unavailable, VaultError) as e:
+            print(f"memex: vectors not updated: {e}. Search uses keywords until this works.", file=sys.stderr)
     sys.exit(r.returncode)
 
 
@@ -907,12 +1004,18 @@ TASK_PREFIX = re.compile(r"^- (\[ \] )?")
 RECALL_FIELDS = ("repo", "repos", "applies_to")
 
 
-RECALL_MAX_ITEMS, RECALL_ITEM_CHARS = 5, 240
+RECALL_MAX_ITEMS, RECALL_ITEM_CHARS, RECALL_MAX_LINES = 5, 240, 14
 
 
 def recall_items(fm: dict) -> list:
     """A page's `recall:` as short lines: one line, or a list of up to RECALL_MAX_ITEMS (commands, paths)."""
-    return [x.strip()[:RECALL_ITEM_CHARS] for x in as_list(fm.get("recall")) if x.strip()][:RECALL_MAX_ITEMS]
+    out = []
+    for x in (x.strip() for x in as_list(fm.get("recall"))):
+        if len(x) > RECALL_ITEM_CHARS:  # cut at a word and say so: half a command must not look like a whole one
+            x = x[:RECALL_ITEM_CHARS - 2].rsplit(" ", 1)[0] + " …"
+        if x:
+            out.append(x)
+    return out[:RECALL_MAX_ITEMS]
 
 
 def recall_line(p: Path, fm: dict) -> str:
@@ -988,7 +1091,11 @@ def recall(cwd: Path) -> str:
                 decisions.append(f"[[{q.stem}]] ({dfm.get('status', '?')})")
         if decisions:
             lines.append(f"  - decisions: {', '.join(decisions[:3])}")
-    lines = "\n".join(lines).split("\n")[:14] + ["More: `memex read \"<Page>\"` · `memex related \"<Page>\"`. Capture what you learn with "
+    lines = "\n".join(lines).split("\n")
+    if len(lines) > RECALL_MAX_LINES:
+        cut = len(lines) - (RECALL_MAX_LINES - 1)
+        lines = lines[:RECALL_MAX_LINES - 1] + [f"({cut} more line(s) cut to fit: read the pages above for the rest.)"]
+    lines = lines + ["More: `memex read \"<Page>\"` · `memex related \"<Page>\"`. Capture what you learn with "
                           "`memex capture`; this session is also recorded for /harvest when it ends."]
     return "\n".join(lines)
 
@@ -1219,6 +1326,7 @@ def main():
     s.add_argument("--all-sources", action="store_true",
                    help="also list source pages that a compiled page above already cites")
     s.add_argument("--json", action="store_true")
+    s.add_argument("--engine", choices=["keyword", "hybrid"], help="default: search.engine in .memex/vault.json")
     s.set_defaults(fn=cmd_search)
     s = sub.add_parser("read", help='a page by name, [[link]], alias or path; "Page#Heading" prints one section')
     s.add_argument("page", nargs="+")
@@ -1250,7 +1358,9 @@ def main():
     s = sub.add_parser("ctx", help="live context for a skill")
     s.add_argument("skill")
     s.set_defaults(fn=cmd_ctx)
-    sub.add_parser("index").set_defaults(fn=lambda a: run_tool("build_index.py"))
+    s = sub.add_parser("index", help="rebuild the generated indexes (and the vector index, with hybrid search)")
+    s.add_argument("--vectors", action="store_true", help="also embed new and changed wiki pages for hybrid search")
+    s.set_defaults(fn=cmd_index)
     s = sub.add_parser("lint")
     s.add_argument("--quick", action="store_true")
     s.add_argument("--report", action="store_true")

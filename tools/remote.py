@@ -62,7 +62,7 @@ def load(v: Path) -> dict:
 def save(v: Path, **changes):
     data = {**load(v), **changes}
     (v / STATUS).parent.mkdir(parents=True, exist_ok=True)
-    (v / STATUS).write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    ml.write_atomic(v / STATUS, json.dumps(data, indent=2) + "\n")
 
 
 def settings(v: Path):

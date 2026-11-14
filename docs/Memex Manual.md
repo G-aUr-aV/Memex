@@ -113,7 +113,7 @@ Plain requests work too: "add this to Memex", "what do I know about X", "prep me
 From any other project, agents read Memex and add to its inbox with `memex capture`. That includes corrections and removals (`--action update|supersede|delete --target "<Page>"`). They never edit the vault's files directly, and the guard enforces this. A session in the vault applies the inbox under the vault's full rules, at the latest at your `/close`.
 
 **Automatic memory.** Setup adds three global hooks for Claude Code and Codex:
-- **Session start, in any repo:** the agent gets what Memex knows about that repo (pages whose `repo:` matches, with open loops and decisions). A playbook's `recall:` is printed in full, one line or a list of up to 5, so put the commands every session there needs in it.
+- **Session start, in any repo:** the agent gets what Memex knows about that repo (pages whose `repo:` matches, with open loops and decisions). A playbook's `recall:` is printed, one line or a list of up to 5, so put the commands every session there needs in it. Keep each line under 240 characters: a longer one is cut at a word and ends in `…`. When several pages match, up to 3 are shown: playbooks first, then the closest repo match, then the most recently updated.
 - **Session end:** the session is recorded in `.memex/sessions.jsonl`.
 - **Each prompt:** the shared recall engine offers at most two relevant compiled pages not already shown
   in that session. Turns the harness starts (a subagent's report, a background-task notice) get none.
@@ -189,7 +189,7 @@ The agent does the bookkeeping; understanding still comes from your own engageme
   Both remove every agent instruction, hook, permission and skill Memex added, and finish with a check that nothing is left.
 - **Undo anything**: every operation is a commit. Say "revert the last ingest" or run `git log --oneline` then `git revert <sha>`.
 - **The index is generated** from each page's one-line summary (`memex index`), so it never drifts.
-- **Scale path**: today, the index plus Obsidian search is enough (Karpathy ran ~100 sources this way). When a section passes ~150 pages, or a search misses a page you know exists, run `bash tools/setup-qmd.sh` in the framework folder for local hybrid search.
+- **Scale path**: today, the index plus Obsidian search is enough (Karpathy ran ~100 sources this way). When a section passes ~150 pages, or a search misses a page you know exists, switch on hybrid search (keywords fused with local embeddings; README → *Hybrid search*) after `memex audit` shows it does better on your own benchmark. `bash tools/setup-qmd.sh` in the framework folder adds qmd as a separate search tool instead.
 - **Evolve the rules**: once a month ask *"Based on the last month, what should we change in the rules?"* The agent proposes a diff and you approve it. Changes for every vault go into the framework (`schema/`, `skills/`), then `git pull` on your other machines. Changes for this vault only go into `.memex/local.md`. Either way, the next session (or `memex sync`) renders them into `AGENTS.md`.
 
 ## 10. Folder map

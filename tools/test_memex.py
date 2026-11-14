@@ -10,6 +10,7 @@ vault's layout, its local-only git safety, the guard (Claude Code, Codex and Her
 CLI, sync, domains, vault locations, and agent integration.
 """
 import datetime
+import http.server
 import json
 import os
 import re
@@ -17,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -619,9 +621,12 @@ class TestCLI(Sandbox):
         text = (self.V / r.stdout.strip()).read_text()
         self.assertIn("domain: learning", text)
         (self.V / r.stdout.strip()).unlink()
-        r = self.memex("capture", "--title", "Leak", stdin=f"key {FAKE_KEY}\n")
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("capture refused", r.stderr)
+        for extra in ([], ["--source", f"https://example.com/?k={FAKE_KEY}"], ["--project", FAKE_KEY]):
+            body = "note\n" if extra else f"key {FAKE_KEY}\n"
+            r = self.memex("capture", "--title", "Leak", *extra, stdin=body)
+            self.assertNotEqual(r.returncode, 0, extra)
+            self.assertIn("capture refused", r.stderr)
+            self.assertNotIn(FAKE_KEY, r.stderr)  # the reason names the kind, never the value
 
     def test_capture_refuses_a_likely_duplicate(self):
         page = self.V / "wiki/learning/concepts/Retry Budget Exhaustion.md"
@@ -672,6 +677,24 @@ class TestCLI(Sandbox):
         self.assertNotEqual(self.memex("file", "inbox/again.md", "--domain", "nope").returncode, 0)
         page.unlink()
         (self.V / "inbox/again.md").unlink()
+
+    def test_file_refuses_a_secret_before_it_reaches_raw(self):
+        clip = self.V / "inbox/leaky clip.md"
+        clip.write_text(f"---\ntitle: Leaky\nsource: https://example.com\n---\nexport KEY={FAKE_KEY}\n")
+        try:
+            r = self.memex("file", "inbox/leaky clip.md", "--domain", "learning")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("file refused: possible AWS access key", r.stderr)
+            self.assertNotIn(FAKE_KEY, r.stderr)
+            self.assertTrue(clip.exists())  # the original stays where it can still be redacted
+            self.assertFalse((self.V / "raw/learning/leaky clip.md").exists())
+            clip.write_text(clip.read_text().replace(FAKE_KEY, "[REDACTED: AWS access key]"))
+            r = self.memex("file", "inbox/leaky clip.md", "--domain", "learning")
+            self.assertEqual(r.returncode, 0, r.stderr)
+        finally:
+            for p in (clip, self.V / "raw/learning/leaky clip.md"):
+                if p.exists():
+                    p.unlink()
 
     def test_rm_checks_backlinks(self):
         r = self.memex("rm", PAGE)
@@ -775,6 +798,108 @@ class TestRetrieval(Sandbox):
         finally:
             for rel_path in made:
                 (self.V / rel_path).unlink()
+
+    def test_search_says_when_memex_probably_has_no_answer(self):
+        out = self.memex("search", "idempotency", "kubernetes", "ingress", "certificate").stdout
+        self.assertIn("the closest has only 1 of 4, so this may not be in Memex", out)
+        self.assertIn("1/4 terms)", out)
+        self.assertIn("no page has every term", out)  # the audit counts partial-only queries by this phrase
+        out = self.memex("search", "idempotency", "zebra").stdout  # half the terms: partial, not weak
+        self.assertIn("showing partial matches", out)
+        self.assertNotIn("may not be in Memex", out)
+        hits = json.loads(self.memex("search", "idempotency", "kubernetes", "ingress", "--json").stdout)
+        self.assertEqual((hits[0]["terms_found"], hits[0]["terms_asked"]), (1, 3))
+
+    def test_superseded_pages_rank_below_current_ones(self):
+        made = {
+            "wiki/learning/concepts/Jitter Policy Old.md":
+                "---\ntype: concept\nstatus: superseded\nsuperseded_by: \"[[Jitter Policy]]\"\nsummary: Jitter jitter "
+                "jitter policy.\n---\nJitter policy jitter.\n",
+            "wiki/learning/concepts/Jitter Policy.md":
+                "---\ntype: concept\nstatus: active\nsummary: The current rule.\n---\n"
+                + "Filler about many other things.\n" * 8 + "Jitter policy today.\n",
+        }
+        for rel_path, body in made.items():
+            (self.V / rel_path).write_text(body)
+        try:
+            out = self.memex("search", "policy", "jitter").stdout.splitlines()  # the old page has more of both words
+            self.assertTrue(out[1].startswith("- wiki/learning/concepts/Jitter Policy.md"), out)
+            self.assertIn("[superseded: see [[Jitter Policy]]]", "\n".join(out))
+            out = self.memex("search", "jitter", "policy", "old").stdout.splitlines()  # an exact title still leads
+            self.assertTrue(out[1].startswith("- wiki/learning/concepts/Jitter Policy Old.md"), out)
+        finally:
+            for rel_path in made:
+                (self.V / rel_path).unlink()
+
+    def test_hybrid_search_fuses_meaning_and_falls_back_to_keywords(self):
+        concepts = (("idempotency", "deduplicating", "twice", "charging"), ("storm", "amplifying", "overload"))
+        seen = []
+
+        class Embeddings(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                seen.append((self.path, body["model"], len(body["input"])))
+                vecs = [[float(any(w in t.lower() for w in c)) for c in concepts] + [0.1] for t in body["input"]]
+                data = json.dumps({"embeddings": vecs}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Embeddings)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        marker, store = self.V / ".memex/vault.json", self.V / ".memex/vectors.json"
+        saved = marker.read_text()
+        new = self.V / "wiki/learning/concepts/Load Shedding.md"
+
+        def configure(url):
+            marker.write_text(json.dumps({**json.loads(saved), "search": {"url": url, "model": "test-embed"}}))
+
+        ask = ("search", "--engine", "hybrid", "charging", "a", "customer", "twice")
+        try:
+            configure(f"http://127.0.0.1:{server.server_address[1]}")
+            r = self.memex(*ask)  # no index yet: keyword results, and the reason
+            self.assertEqual(r.returncode, 0)
+            self.assertIn("no vector index yet", r.stderr)
+            self.assertIn("No matches", r.stdout)
+            r = self.memex("index", "--vectors")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("wiki pages", r.stdout)
+            self.assertEqual(seen[0][:2], ("/api/embed", "test-embed"))
+            self.assertEqual(self.git("check-ignore", "-q", ".memex/vectors.json").returncode, 0)  # machine-local
+            r = self.memex(*ask)  # a paraphrase: no shared word with the page, found by meaning
+            self.assertEqual(r.stderr, "")
+            self.assertTrue(r.stdout.splitlines()[1].startswith(f"- {PAGE}"), r.stdout)
+            self.assertIn("No matches", self.memex("search", "charging", "a", "customer", "twice").stdout)  # default
+            calls = len(seen)
+            self.assertIn("inbox/", self.memex("search", "--engine", "hybrid", "--in", "inbox", "hello").stdout)
+            self.assertEqual(len(seen), calls)  # only wiki pages have vectors: other scopes stay keyword-only
+            out = self.memex("search", "--engine", "hybrid", "retry", "storms").stdout.splitlines()
+            self.assertTrue(out[1].startswith(f"- {OTHER}"), out)  # an exact title still comes first
+            new.write_text("---\ntype: concept\nstatus: active\nsummary: Dropping work under overload.\n---\nx\n")
+            calls = len(seen)
+            out = self.memex("search", "--engine", "hybrid", "amplifying", "storm", "--limit", "9").stdout
+            self.assertIn("concepts/Load Shedding.md", out)  # a page added since the index was built is embedded now
+            self.assertEqual(len(seen), calls + 2)  # the new page, then the query
+            server.shutdown()
+            server.server_close()
+            r = self.memex("search", "--engine", "hybrid", "idempotency")  # model gone: keywords, no failure
+            self.assertEqual(r.returncode, 0)
+            self.assertIn("used keyword search", r.stderr)
+            self.assertTrue(r.stdout.splitlines()[1].startswith(f"- {PAGE}"), r.stdout)
+            configure("http://example.com:11434")  # never send page text off this machine
+            r = self.memex("search", "--engine", "hybrid", "idempotency")
+            self.assertIn("must be on this machine", r.stderr)
+            self.assertIn(PAGE, r.stdout)
+        finally:
+            server.server_close()
+            marker.write_text(saved)
+            for p in (store, new):
+                if p.exists():
+                    p.unlink()
 
     def test_sections_and_outline(self):
         r = self.memex("read", "Idempotency Keys#Content")
@@ -897,6 +1022,11 @@ class TestSessions(Sandbox):
             self.assertIn("  - step 5: ", out)
             self.assertNotIn("step 6", out)
             self.assertLessEqual(len(out.splitlines()), 15)
+            long = "run venv/bin/python -m pytest -q " + "tests/unit " * 30 + "LAST_WORD"
+            book.write_text(re.sub(r"recall:\n(- .*\n)+", f"recall: {long}\n", book.read_text()))
+            line = self.hook("session-start", {"cwd": str(self.repo)}).stdout.splitlines()[2]
+            self.assertTrue(line.endswith("tests/unit …"), line)  # cut at a word and marked, not mid-word
+            self.assertNotIn("LAST_WORD", line)
         finally:
             book.unlink()
 
@@ -972,7 +1102,8 @@ class TestSessions(Sandbox):
         session("c.jsonl", "sess-c", str(self.V), [])
         bench = self.V / "meta/audit/search-benchmark.tsv"
         bench.parent.mkdir(parents=True, exist_ok=True)
-        bench.write_text("# query<TAB>page\npayments api\tPayments API\n")
+        bench.write_text("# query<TAB>page<TAB>kind\npayments api\tPayments API\texact\n"
+                         "invoicing service retries\tPayments API\tparaphrase\nkubernetes ingress certificate\t-\n")
         env = {**self.env, "MEMEX_TRANSCRIPTS": str(self.tmp / "cc-projects")}
         record, report = self.V / ".memex/audit.jsonl", self.V / f"meta/audit/{datetime.date.today().isoformat()}.md"
         try:
@@ -981,8 +1112,12 @@ class TestSessions(Sandbox):
             m = json.loads(r.stdout)["metrics"]
             want = {"sessions": 2, "vault_sessions": 1, "lookup_sessions": 1, "lookup_pct": 50.0, "capture_sessions": 2,
                     "captures": 2, "gate_refusals": 1, "queries": 1, "zero_hit_pct": 100.0, "reads": 1,
-                    "recall_sessions": 1, "recall_opened_pct": 100.0, "recaptured": 1, "bench_hit1": 1, "bench_hit3": 1}
+                    "recall_sessions": 1, "recall_opened_pct": 100.0, "recaptured": 1, "bench_hit1": 2, "bench_hit3": 2}
             self.assertEqual({k: m[k] for k in want}, want)
+            b = json.loads(r.stdout)["bench"]
+            self.assertEqual((b["queries"], b["no_answer"], b["false_positives"]), (2, 1, 0))
+            self.assertEqual(b["kinds"], {"exact": [1, 1, 1], "paraphrase": [1, 1, 1]})
+            self.assertNotIn("hybrid", b)  # no vector index and the engine is keyword: nothing to compare
             self.assertGreater(m["memex_token_pct"], 0)
             r = self.memex("audit", "--since", "2026-09-30", "--until", "2026-09-30", "--record", "--report", env=env)
             self.assertIn("Looked something up: 1 (50.0%)", r.stdout)
@@ -991,7 +1126,9 @@ class TestSessions(Sandbox):
             self.assertEqual(self.git("check-ignore", "-q", ".memex/audit.jsonl").returncode, 0)  # machine-local
             out = self.memex("audit", "--since", "2026-09-29", "--until", "2026-09-30", env=env).stdout
             self.assertIn("(was 50.0% in 2026-09-30..2026-09-30)", out)
-            self.assertIn("Search benchmark: hit@1 1/1", out)
+            self.assertIn("Search benchmark: hit@1 2/2", out)
+            self.assertIn("; by kind (top 1/top 3/queries): exact 1/1/1; paraphrase 1/1/1; no-answer queries answered "
+                          "without a warning: 0/1; median ", out)
             listed = self.memex("audit", "--since", "2026-09-30", "--until", "2026-09-30", "--lookups", env=env).stdout
             self.assertIn("a.jsonl · tool sess-a-t0\n$ memex search refund window\nNo matches", listed)
             self.assertNotIn("capture", listed)  # lookups only
@@ -1033,6 +1170,55 @@ class TestSessions(Sandbox):
         self.assertIn("- Searched for and not found: 'refund window' (x5)", out)
         self.assertIn("never opened: [[Payments API]] (5 sessions)", out)
         self.assertIn("- payments-api (5 sessions): `src/app.py` (5)", out)
+
+    def test_audit_counts_a_recalled_page_only_when_read_after_it_was_shown_and_redacts(self):
+        proj = self.tmp / "cc-strict" / "-code-payments-api"
+        proj.mkdir(parents=True, exist_ok=True)
+        recall = "## Memex: pages that match this request\n- [[Payments API]] (system): x"
+        page = "<!-- wiki/engineering/systems/Payments API.md -->\nbody"
+        cases = {  # session -> (calls before the page is shown, calls after)
+            "early": ([('memex read "Payments API"', page)], []),
+            "search": ([], [('memex search "Payments API"', "1 match(es); showing 1:\n- wiki/…/Payments API.md")]),
+            "failed": ([], [('memex read "Payments API#Nope"', "memex: wiki/… has no heading 'Nope'")]),
+            "named": ([], [('grep -rn "Payments API" . ; memex read "Other"', "<!-- wiki/x/Other.md -->\nbody")]),
+            "read": ([], [('memex read "Payments API#Open loops"',
+                           "<!-- wiki/engineering/systems/Payments API.md#Open loops -->\n## Open loops"),
+                          (f"memex search {FAKE_KEY}", f"No matches for '{FAKE_KEY}' in wiki, inbox/. Try synonyms")]),
+        }
+        for sid, (before, after) in cases.items():
+            cwd, lines, minute = str(self.repo), [], 0
+            for call in before + [None] + after:
+                minute += 2
+                stamp = f"2026-10-07T10:{minute:02d}:00Z"
+                cmd, res = call or (None, None)
+                if cmd is None:
+                    lines.append({"type": "attachment", "sessionId": sid, "cwd": cwd, "timestamp": stamp, "attachment": {
+                        "type": "hook_success", "hookName": "UserPromptSubmit", "content": recall}})
+                    continue
+                tid = f"{sid}-t{minute}"
+                lines += [{"type": "assistant", "sessionId": sid, "cwd": cwd, "timestamp": stamp, "message": {
+                               "id": f"{sid}-m{minute}", "content": [{"type": "tool_use", "id": tid, "name": "Bash",
+                                                                      "input": {"command": cmd}}]}},
+                          {"type": "user", "sessionId": sid, "cwd": cwd, "timestamp": stamp, "message": {
+                               "role": "user", "content": [{"type": "tool_result", "tool_use_id": tid, "content": res}]}}]
+            (proj / f"{sid}.jsonl").write_text("".join(json.dumps(l) + "\n" for l in lines))
+        env = {**self.env, "MEMEX_TRANSCRIPTS": str(self.tmp / "cc-strict")}
+        r = self.memex("audit", "--since", "2026-10-07", "--until", "2026-10-07", "--json", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        m = json.loads(r.stdout)["metrics"]
+        self.assertEqual((m["recall_sessions"], m["recall_opened_pct"]), (5, 20.0))  # only "read" counts
+        self.assertEqual(m["recall_unopened"], [])  # one session read it, so it isn't listed as never opened
+        self.assertNotIn(FAKE_KEY, r.stdout)
+        self.assertEqual(m["zero_hit_queries"], [["[REDACTED: AWS access key]", 1]])
+        report = self.V / f"meta/audit/{datetime.date.today().isoformat()}.md"
+        try:
+            out = self.memex("audit", "--since", "2026-10-07", "--until", "2026-10-07", "--report", env=env).stdout
+            self.assertNotIn(FAKE_KEY, out + report.read_text())
+            self.assertIn("read one of them afterwards: 20.0%", out)
+            self.assertIn("listed as leads to check", out)
+        finally:
+            if report.exists():
+                report.unlink()
 
     def test_harvest_skip_captured(self):
         ledger = self.V / ".memex/sessions.jsonl"
@@ -1528,7 +1714,8 @@ class TestAuditAdapters(unittest.TestCase):
         ]
         s, m = self.measured(self.fixture([
             ("exec_command", {"cmd": "memex search invoice"}, "No matches for 'invoice'"),
-            ("shell", {"command": ["bash", "-lc", 'memex read "Payments API"']}, "page"),
+            ("shell", {"command": ["bash", "-lc", 'memex read "Payments API"']},
+             "<!-- wiki/engineering/systems/Payments API.md -->\npage"),
             ("exec_command", {"cmd": "memex capture --title 'Invoice UTC fix'"}, "inbox/Invoice UTC fix.md\n"),
         ], extra))
         self.assertEqual((m["sessions"], m["queries"], m["reads"], m["captures"]), (1, 1, 1, 1))

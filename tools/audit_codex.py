@@ -112,6 +112,7 @@ def parse(fn, timestamp, memex_cmd):
                 headers = ("## Memex: what the owner's knowledge base says", "## Memex: pages that match this request")
                 if any(h in text for h in headers):
                     s["recall"] += "\n" + text
+                    s.setdefault("recalls", []).append((when, text))
                 if "Memex inbox looks stalled" in text:
                     s["stall"] = True
                 begin = text.find("<!-- memex:begin")
