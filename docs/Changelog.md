@@ -7,10 +7,14 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 
 ## Unreleased: 0.3.0, framework and vault split
 ### Fixed
+- **Prompt recall ignores turns the harness started.** A subagent's report or a background-task notice (`<agent-message>`, `<task-notification>`) no longer gets pages matched against its text, which also used up those pages for the rest of the session. System reminders that carry attributes are stripped like plain ones.
 - **Codex memory parity:** install the shared prompt-recall hook for Codex as well as Claude Code, preserving exact hook trust review, the two-page budget, session suppression and the three-second SessionEnd timeout. `memex audit` now reads both agents' transcripts, including Codex code-mode and asynchronous calls, reports combined/per-agent metrics and coverage, and avoids counting resumed history, cached tokens or cumulative usage twice. Lookup excerpts are redacted; incomplete captures are not credited as writes. Combined-agent trends use a new record version.
 - Keep the Python 3.9 Linux CI job on Ubuntu 24.04: `ubuntu-latest` moved to Ubuntu 26.04, where `setup-python` cannot install Python 3.9. Python 3.12 still tests `ubuntu-latest`; both Python versions continue to test macOS.
 - Reconciled the independently added `/auto-inbox` workflows: retain full-inbox context, interrupted-run recovery and `/verify` coordination while preserving scoped commits and unrelated staged or unstaged changes. Recovery is checked before exiting for an empty inbox; review-only runs never file or commit recovery candidates.
 - Codex's global `SessionEnd` hook now requests its supported 3-second timeout instead of 10 seconds, removing the timeout-clamping warning. Setup refreshes existing installations with the corrected value; other hook timeouts are unchanged.
+
+### Changed
+- **Shorter instructions for agents outside the vault.** The Memex block in `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` is about half as long; the details live in the `memex` skill. Re-run `setup.sh` to refresh it.
 
 ### Changed (breaking layout)
 - **The framework no longer is the vault.** This repo holds code only (`schema/ skills/ agents/ config/ hooks/ tools/ templates/ seed/ docs/`). `setup.sh` (now at the root) creates the vault in a separate folder, asking where. The default is `MemexVault` in the folder you run it from; a vault inside the framework folder is git-ignored there.
@@ -20,6 +24,9 @@ Notable changes to the Memex framework. The format follows [Keep a Changelog](ht
 - Skills call `memex ctx`, `memex lint` and `memex commit` instead of tool paths.
 
 ### Added
+- **`recall:` may be a short list.** A playbook's `recall:` can hold up to 5 lines (the test command, the interpreter, the database). Session start prints them all, so a session can use them without a lookup; the 14-line budget still holds.
+- **`memex audit` names what to fix:** the queries that found nothing, the pages shown at session start that no session opened, and the files most work sessions opened in each repo. `/audit` carries them into its verdict.
+- **Upkeep may run commands the vault lists.** `/verify` stays read-only on code repos, except for commands under "Commands upkeep may run" in the vault's `.memex/local.md`, for facts that need a run.
 - `/auto-inbox`: scheduled material-value review and serial quick ingestion, with a read-only review mode, preserved deferred/no-material entries, no deletions and checks for overlapping wiki work. `/ingest` now states the shared admission test explicitly: compile source-supported knowledge the owner will revisit, with a clear purpose and a material addition or correction.
 - `memex commit --only <files...>` commits a batch's named vault files and generated indexes while preserving unrelated staged and unstaged edits. Default commits are unchanged; scoped commits retain identity, lint and hooks, and refuse directories, paths escaping the vault and partial merge resolutions.
 - **Vault git (local-only by default)**: repo-local `Memex Agent <memex-agent@localhost>` identity (also `author.*`/`committer.*`), no commit signing, local `core.hooksPath`, a pre-commit hook that also refuses other identities, and a pre-push hook that refuses everything. `memex commit` forces the identity through the environment (beating global and `includeIf` config), refuses to run with a remote or without its own repo, and adds a `Memex-Framework: <version> (<sha>)` trailer.

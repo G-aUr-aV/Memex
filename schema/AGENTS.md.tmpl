@@ -33,7 +33,7 @@ Every wiki page lives in exactly one domain folder; links across domains are enc
 {{DOMAINS}}
 
 Type ↔ folder: person→people, project→projects, system→systems, decision→decisions, incident→incidents, playbook→playbooks, concept→concepts, entity→entities (tools, orgs, authors, products, places), topic→topics (evolving theses, book/course hubs), source→sources, synthesis→syntheses, review→career|reflections, area→areas, goal→goals, idea→ideas.
-Templates for every type: `meta/templates/wiki/`. Read the matching template before creating a page, and set its `domain:` to the folder's domain. On project and system pages, set `repo:` (git remote `owner/name` or folder name), and on playbooks `applies_to:`: agents working in that repo then get the page at session start, playbooks first. A playbook may add `recall:`, the one line every session in that repo must know (else its summary is shown).
+Templates for every type: `meta/templates/wiki/`. Read the matching template before creating a page, and set its `domain:` to the folder's domain. On project and system pages, set `repo:` (git remote `owner/name` or folder name), and on playbooks `applies_to:`: agents working in that repo then get the page at session start, playbooks first. A playbook may add `recall:`: the line, or a list of up to 5 short lines (the test command, the interpreter, the database), that every session in that repo must know. Without it the summary is shown.
 
 ## Page conventions
 - **Filenames**: natural Title Case (`Payments Service.md`, `Idempotency Keys.md`); no `: / \ # ^ [ ] |`. Wiki filenames never start with a date; raw files and journal notes always do, which keeps basenames unique. Put the date last on point-in-time wiki pages: `Arch Sync 2026-09-25.md`.

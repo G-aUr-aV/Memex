@@ -113,13 +113,16 @@ Plain requests work too: "add this to Memex", "what do I know about X", "prep me
 From any other project, agents read Memex and add to its inbox with `memex capture`. That includes corrections and removals (`--action update|supersede|delete --target "<Page>"`). They never edit the vault's files directly, and the guard enforces this. A session in the vault applies the inbox under the vault's full rules, at the latest at your `/close`.
 
 **Automatic memory.** Setup adds three global hooks for Claude Code and Codex:
-- **Session start, in any repo:** the agent gets what Memex knows about that repo (pages whose `repo:` matches, with open loops and decisions).
+- **Session start, in any repo:** the agent gets what Memex knows about that repo (pages whose `repo:` matches, with open loops and decisions). A playbook's `recall:` is printed in full, one line or a list of up to 5, so put the commands every session there needs in it.
 - **Session end:** the session is recorded in `.memex/sessions.jsonl`.
 - **Each prompt:** the shared recall engine offers at most two relevant compiled pages not already shown
-  in that session. Codex uses `UserPromptSubmit` too; review newly installed definitions in `/hooks`.
+  in that session. Turns the harness starts (a subagent's report, a background-task notice) get none.
+  Codex uses `UserPromptSubmit` too; review newly installed definitions in `/hooks`.
 
 **Usage audit.** `memex audit` reads Claude Code transcripts and Codex active/archived sessions, with
-combined and per-agent metrics and explicit parsing/usage coverage. `MEMEX_TRANSCRIPTS` overrides the
+combined and per-agent metrics and explicit parsing/usage coverage. It also lists what sessions searched for
+and did not find, pages shown at session start that no session opened, and the files most work sessions
+opened in each repo. `MEMEX_TRANSCRIPTS` overrides the
 Claude root; `MEMEX_CODEX_TRANSCRIPTS` overrides the Codex root (otherwise `$CODEX_HOME`, or `~/.codex`).
 Token shares and capture latency are estimates; missing results are not successful captures. Trend
 comparisons start with the combined-agent audit format rather than comparing it to older Claude-only runs.

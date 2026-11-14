@@ -19,7 +19,7 @@ Work without asking, then report.
 
 **Preflight.** If the uncommitted changes listed above include anything under `wiki/` or `raw/`, another vault run (an inbox run) is mid-change. Stop and report `verify: SKIPPED: another vault run in progress`; the next run picks it up.
 
-The code repos are **read-only**. Never check out, switch, stash, pull, commit, reset, build or run tests in them, and never open `.env` files or secrets. Read other branches with `git -C <repo> show <ref>:<path>`, `git -C <repo> grep -n <pattern> <ref>` and `git -C <repo> log`. Follow the owner's own instructions about each repo, e.g. files they've said not to read.
+The code repos are **read-only**. Never check out, switch, stash, pull, commit, reset, build or run tests in them, and never open `.env` files or secrets. Read other branches with `git -C <repo> show <ref>:<path>`, `git -C <repo> grep -n <pattern> <ref>` and `git -C <repo> log`. Follow the owner's own instructions about each repo, e.g. files they've said not to read. The one exception to read-only: a command this vault's rules list under "Commands upkeep may run" (AGENTS.md, Vault-specific rules). Run it exactly as written, in the folder it names, when a page you are checking depends on its result, and record its output as evidence like any other command's.
 
 ## 1. Pick claims
 For each page, find its repo in the checkouts listed above; if it isn't listed, say so and skip the page. Record the ref you check against: the default branch or the latest `release/*` branch, plus the branch the page names if it still exists (`git -C <repo> branch -a --list`). Then pick 3–8 **load-bearing current-state claims**:

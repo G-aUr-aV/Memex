@@ -6,8 +6,9 @@
 Reads Claude Code and Codex transcripts and the vault. It reports deterministic
 measures for agent sessions outside the vault and the framework:
 - use: lookups, captures, the duplicate gate;
-- retrieval: zero-hit and partial-only queries, follow-up reads;
-- recall: pages opened after session start;
+- retrieval: zero-hit and partial-only queries (and what they asked for), follow-up reads;
+- recall: pages opened after session start, and pages shown often but never opened;
+- orientation: the files work sessions open most in each repo;
 - re-discovery: the same topic captured again;
 - cost: Memex's share of tokens;
 - latency: time spent writing captures;
@@ -220,17 +221,24 @@ def measure(sessions, v: Path) -> dict:
     queries = sum(operations(t).count("search") for _, t in searches)
     zero = sum(t["text"].count("No matches for") for _, t in searches)
     partial = sum(t["text"].count("no page has every term") for _, t in searches)
+    missed = {}
+    for _, t in searches:
+        for _, q in re.findall(r"No matches for (['\"])(.{1,80}?)\1 in ", t["text"]):
+            missed[q] = missed.get(q, 0) + 1
     followed = 0
     for ss in main.values():
         ops = [op for s in ss for t in s["tools_unique"] for op in operations(t)]
         followed += "search" in ops and "read" in ops[ops.index("search") + 1:]
     # recall: did the session open a page it was given?
     recalled = [ss for ss in main.values() if any(s["recall"] for s in ss)]
-    opened = 0
+    opened, shown, used = 0, {}, {}
     for ss in recalled:
         pages = set(re.findall(r"\[\[([^\]]+)\]\]", "\n".join(s["recall"] for s in ss)))
         asked = " ".join(t["cmd"] for s in ss for t in s["tools"] if set(operations(t)) & {"read", "search"})
         opened += any(p in asked for p in pages)
+        for p in pages:
+            shown[p] = shown.get(p, 0) + 1
+            used[p] = used.get(p, 0) + (p in asked)
     # re-discovery: a capture whose title says what an earlier capture (from another session) already said
     recaptured, clusters = 0, {}
     earlier = []
@@ -279,8 +287,11 @@ def measure(sessions, v: Path) -> dict:
         "searches": len(searches), "queries": queries, "reads": read_count,
         "captures_per_read": round(capture_count / read_count, 1) if read_count else None,
         "zero_hit_pct": pct(zero, queries), "partial_only_pct": pct(partial, queries),
+        "zero_hit_queries": sorted(missed.items(), key=lambda x: (-x[1], x[0]))[:8],
         "search_then_read_sessions": followed,
         "recall_sessions": len(recalled), "recall_opened_pct": pct(opened, len(recalled)),
+        "recall_unopened": sorted(((p, n) for p, n in shown.items() if n >= 3 and not used[p]),
+                                  key=lambda x: (-x[1], x[0]))[:5],
         "stall_alarms": sum(1 for ss in main.values() for s in ss if s["stall"]),
         "recaptured": recaptured,
         "recaptured_topics": sorted(clusters.items(), key=lambda x: -x[1])[:5],
@@ -291,6 +302,57 @@ def measure(sessions, v: Path) -> dict:
         "unconfirmed_captures": sum(x not in written and x not in refused and not x[1].get("pending") for x in caps),
         "sessions_without_usage": sum(not any(s["usage"] for s in ss) for ss in main.values()),
     }
+
+
+CODE_PATH = re.compile(r"(?<![\w./@:-])((?:[\w.@-]+/)*[\w@-][\w.@-]*\.(?:py|java|kt|scala|go|rs|rb|php|cs|c|h|cpp|swift|"
+                       r"ts|tsx|js|jsx|vue|sql|xml|yml|yaml|json|toml|md|sh|gradle|properties|cfg|ini|tf|proto))(?![\w/-])")
+HOT_MIN_SESSIONS, HOT_SHARE, HOT_TOP = 5, 0.2, 8
+
+
+def opened_paths(tool, cwd: str):
+    """Repo-relative paths a tool call read or searched: Read and Grep targets, and file names in a shell command."""
+    inp = tool.get("input") if isinstance(tool.get("input"), dict) else {}
+    name = str(tool.get("name") or "")
+    raw = []
+    if name in ("Read", "Grep"):
+        raw.append(str(inp.get("file_path") or inp.get("path") or ""))
+    elif tool.get("cmd") and not tool.get("memex"):
+        raw += CODE_PATH.findall(re.sub(r"https?://\S+", " ", tool["cmd"]))
+    out = set()
+    for r in raw:
+        r = os.path.expanduser(r)
+        if os.path.isabs(r):
+            if not inside(r, cwd) or os.path.realpath(r) == os.path.realpath(cwd):
+                continue
+            r = os.path.relpath(os.path.realpath(r), os.path.realpath(cwd))
+        r = r[2:] if r.startswith("./") else r
+        if CODE_PATH.fullmatch(r) and ".." not in r.split("/"):
+            out.add(r)
+    return out
+
+
+def hot_files(sessions) -> dict:
+    """Per repo folder: the files the most work sessions opened. A file many sessions reopen is where agents
+    orient themselves, so it is worth naming on that repo's system page or playbook."""
+    seen, repos = {}, {}
+    for s in sessions:
+        if s["kind"] != "work":
+            continue
+        repo, key = Path(s["cwd"]).name, session_key(s)
+        repos.setdefault(repo, set()).add(key)
+        for t in s["tools"]:
+            for path in opened_paths(t, s["cwd"]):
+                seen.setdefault((repo, path), set()).add(key)
+    out = {}
+    for repo, keys in repos.items():
+        if len(keys) < HOT_MIN_SESSIONS:
+            continue
+        floor = max(3, HOT_SHARE * len(keys))
+        top = sorted(((p, len(k)) for (r, p), k in seen.items() if r == repo and len(k) >= floor),
+                     key=lambda x: (-x[1], x[0]))[:HOT_TOP]
+        if top:
+            out[repo] = {"sessions": len(keys), "files": top}
+    return out
 
 
 def bench(v: Path):
@@ -374,6 +436,12 @@ def render(r: dict) -> str:
            f"read a page after searching: {m['search_then_read_sessions']}",
            f"- Session-start recall: {m['recall_sessions']} sessions; a recalled page opened later: "
            f"{val(m['recall_opened_pct'], '%')}{trend('recall_opened_pct', '%')}; stall alarms shown: {m['stall_alarms']}"]
+    if m.get("zero_hit_queries"):
+        out.append("- Searched for and not found: " + "; ".join(f"{q!r}" + (f" (x{n})" if n > 1 else "")
+                                                               for q, n in m["zero_hit_queries"]))
+    if m.get("recall_unopened"):
+        out.append("- Shown at session start or on a prompt, never opened: "
+                   + ", ".join(f"[[{p}]] ({n} sessions)" for p, n in m["recall_unopened"]))
     if b:
         out.append(f"- Search benchmark: hit@1 {b['hit1']}/{b['queries']}{trend('bench_hit1')}, hit@3 "
                    f"{b['hit3']}/{b['queries']}{trend('bench_hit3')}"
@@ -381,6 +449,10 @@ def render(r: dict) -> str:
     out += ["", "## Re-discovery",
             f"- Captures repeating an earlier capture from another session: {m['recaptured']}{trend('recaptured')}"
             + (f"; top: {', '.join(f'{t} (x{n})' for t, n in m['recaptured_topics'])}" if m["recaptured_topics"] else ""),
+            *(["", "## Orientation (files most work sessions opened)"]
+              + [f"- {repo} ({h['sessions']} sessions): " + ", ".join(f"`{p}` ({n})" for p, n in h["files"])
+                 for repo, h in sorted(m["hot_files"].items(), key=lambda x: -x[1]["sessions"])]
+              if m.get("hot_files") else []),
             "", "## Cost and latency",
             f"- Memex share of input-side tokens: ≈{val(m['memex_token_pct'], '%')}{trend('memex_token_pct', '%')}; "
             f"of output tokens: ≈{val(m['memex_output_pct'], '%')}",
@@ -440,6 +512,7 @@ def main(argv=None):
                     print(redact(excerpt)[0])
         return 0
     m = measure(sessions, v)
+    m["hot_files"] = hot_files(sessions)
     b = bench(v)
     m["bench_hit1"], m["bench_hit3"] = (b["hit1"], b["hit3"]) if b else (None, None)
     r = {"generated": today.isoformat(), "window": window, "metrics": m, "health": health(v), "bench": b,

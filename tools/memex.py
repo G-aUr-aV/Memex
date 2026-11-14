@@ -84,13 +84,10 @@ def pointer() -> str:
     v = V()
     d = "|".join(ml.domain_names(v))
     return f"""## Memex: the owner's knowledge base ({v})
-Use it on your own initiative. You don't need to ask the owner first; these commands are pre-approved. Treat what it says as a lead to check against the code, not as ground truth.
-- **Look up** before answering about the owner's projects, people, decisions or past work, before drafting status updates, before building, testing or running something in a repo for the first time in a session, and when a command fails twice: `memex search <terms>`, then `memex read "<Page>"`. If the session started with Memex playbooks for this repo, follow them.
-- **Capture** only what is durable *and* settled: a confirmed root cause, a decision and its reason, a gotcha, a command that worked, a preference the owner states. Work in progress (uncommitted designs, temp branches, gap lists) waits until it settles. Search first: if Memex already has it, capture only what you add or correct, with `--action update --target "<Page>"`. Otherwise `memex capture --title "<Title>" --domain <{d}> --why "<one line>"` with the note on stdin (3-20 lines, via a heredoc), with "as of YYYY-MM-DD" on volatile facts. Capture refuses a likely duplicate and names the page to update instead; add `--new` only when the note really is new.
-- **Change or remove** existing knowledge: capture with `--action update|supersede|delete --target "<Page>"` and say what's wrong and why in the note. A session in the vault applies it at its next inbox run.
-- **The inbox is the only way in from here.** Don't edit, move or delete files in the vault yourself; the guard refuses, so use `memex capture`.
-- Sessions are recorded when they end and compiled by `/harvest`, but capture decisive findings right away: the harvest only sees what the transcript shows.
-- Never capture secrets, credentials or other people's personal data. Never add a git remote to the vault or push it."""
+Use it on your own initiative: `memex` is pre-approved, and the `memex` skill has the details. Treat what it says as a lead to check against the code, not as ground truth.
+- **Look up** (`memex search <terms>`, then `memex read "<Page>"`) before answering about the owner's projects, people, decisions or past work, before drafting status updates, before building, testing or running something in a repo for the first time in a session, and when a command fails twice. Follow the playbooks a session starts with.
+- **Capture** only what is durable *and* settled, after searching for it: a confirmed root cause, a decision and its reason, a gotcha, a command that worked, a preference the owner states. `memex capture --title "<Title>" --domain <{d}> --why "<one line>"` with a 3-20 line note on stdin. To correct or remove a page, add `--action update|supersede|delete --target "<Page>"`. Sessions are harvested when they end, so capture only decisive findings right away.
+- **The inbox is the only way in from here**: the guard refuses any other write to the vault. Never capture secrets, credentials or other people's personal data, and never add a git remote to the vault or push it."""
 
 
 def safety_notes(v: Path):
@@ -910,9 +907,19 @@ TASK_PREFIX = re.compile(r"^- (\[ \] )?")
 RECALL_FIELDS = ("repo", "repos", "applies_to")
 
 
+RECALL_MAX_ITEMS, RECALL_ITEM_CHARS = 5, 240
+
+
+def recall_items(fm: dict) -> list:
+    """A page's `recall:` as short lines: one line, or a list of up to RECALL_MAX_ITEMS (commands, paths)."""
+    return [x.strip()[:RECALL_ITEM_CHARS] for x in as_list(fm.get("recall")) if x.strip()][:RECALL_MAX_ITEMS]
+
+
 def recall_line(p: Path, fm: dict) -> str:
-    """One line per recalled page: its one-line fix (`recall:`, else the summary) and how fresh it is."""
+    """A recalled page: what every session must know (`recall:`, else the summary) and how fresh it is. A `recall:`
+    list puts its first item on the page's line and the rest on indented lines under it."""
     kind = str(fm.get("type") or "page")
+    items = recall_items(fm)
     verified = fm.get("verified") or fm.get("verified_on")
     if verified:
         when = f"verified {verified}"
@@ -920,7 +927,8 @@ def recall_line(p: Path, fm: dict) -> str:
         when = f"updated {fm.get('updated') or '?'}, not verified against code"
     else:
         when = f"updated {fm.get('updated') or '?'}"
-    return f"- [[{p.stem}]] ({kind}, {when}): {fm.get('recall') or fm.get('summary') or ''}"
+    head = f"- [[{p.stem}]] ({kind}, {when}): {items[0] if items else fm.get('summary') or ''}"
+    return "\n".join([head] + [f"  - {x}" for x in items[1:]])
 
 
 def recall(cwd: Path) -> str:
@@ -980,7 +988,7 @@ def recall(cwd: Path) -> str:
                 decisions.append(f"[[{q.stem}]] ({dfm.get('status', '?')})")
         if decisions:
             lines.append(f"  - decisions: {', '.join(decisions[:3])}")
-    lines = lines[:14] + ["More: `memex read \"<Page>\"` · `memex related \"<Page>\"`. Capture what you learn with "
+    lines = "\n".join(lines).split("\n")[:14] + ["More: `memex read \"<Page>\"` · `memex related \"<Page>\"`. Capture what you learn with "
                           "`memex capture`; this session is also recorded for /harvest when it ends."]
     return "\n".join(lines)
 
@@ -1044,8 +1052,10 @@ def mark_shown(v: Path, sid: str, pages):
             old.unlink(missing_ok=True)
 
 
-PROMPT_NOISE = [re.compile(r"<system-reminder>.*?(</system-reminder>|$)", re.S),
+PROMPT_NOISE = [re.compile(r"<system-reminder[^>]*>.*?(</system-reminder[^>]*>|$)", re.S),
                 re.compile(r"<pasted_content[^>]*>.*?(</pasted_content>|$)", re.S), re.compile(r"https?://\S+")]
+# A turn the harness started (a subagent's report, a background-task notice) is not the owner asking about anything.
+PROMPT_MACHINE = re.compile(r"<(agent-message|task-notification)\b")
 PROMPT_PATH = re.compile(r"(?:~|/)?(?:[\w.@-]+/){2,}([\w.@-]+/)?([\w.@-]+)")  # keep a path's last two parts
 PROMPT_PACKAGE = re.compile(r"\b(?:com|org|net|io)\.(?:[a-z0-9_]+\.)+")  # com.acme.pay.Foo -> Foo
 PROMPT_MIN_SCORE, PROMPT_RARE = 6.5, 2  # summed IDF over the compiled pages; "rare" = in at most 2 of them
@@ -1117,6 +1127,8 @@ def prompt_matches(v: Path, prompt: str, skip=()):
 
 def prompt_recall(v: Path, prompt: str, sid: str) -> str:
     """Context for one prompt: up to 2 compiled pages it is clearly about that this session hasn't been shown yet."""
+    if PROMPT_MACHINE.search(PROMPT_NOISE[0].sub(" ", prompt)):
+        return ""
     picks = prompt_matches(v, prompt, skip=shown_pages(v, sid))[:PROMPT_MAX_PAGES]
     if not picks:
         return ""

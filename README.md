@@ -216,9 +216,11 @@ sequenceDiagram
   - records which session ran where, without a model call and in well under a second;
   - skips vault sessions and the folders listed in `harvest.exclude`.
 - **Recall on each prompt**: the same `UserPromptSubmit` handler in Claude Code and Codex offers up to
-  two relevant compiled pages and suppresses pages already shown in that session. Codex requires review
+  two relevant compiled pages and suppresses pages already shown in that session; turns the harness
+  starts, such as a subagent's report, get none. Codex requires review
   of new hook definitions in `/hooks`; setup preserves that trust boundary.
-- **`memex audit`** reads both agents' local transcripts, with combined and per-agent metrics. Codex direct
+- **`memex audit`** reads both agents' local transcripts, with combined and per-agent metrics, and names what
+  to fix: queries that found nothing, recalled pages nobody opened, and each repo's most-opened files. Codex direct
   shell calls, code-mode wrappers, asynchronous results and token usage are normalized without executing
   transcript text. Coverage and incomplete calls are reported; token shares are estimates. See
   [Claude Code and Codex parity](docs/Codex%20Parity.md) for the implementation and validation plan.

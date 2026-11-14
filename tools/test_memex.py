@@ -889,6 +889,14 @@ class TestSessions(Sandbox):
             self.assertIn("[[Payments API]] (system, updated 2026-09-20, not verified against code)", out)
             self.assertLessEqual(len(out.splitlines()), 15)
             self.assertTrue(out.rstrip().splitlines()[-1].startswith("More:"))
+            book.write_text(book.read_text().replace(
+                "recall: pytest needs TZ=UTC or the invoice tests fail\n",
+                "recall:\n" + "".join(f"- step {i}: venv/bin/python -m pytest\n" for i in range(1, 8))))
+            out = self.hook("session-start", {"cwd": str(self.repo)}).stdout  # a list: first item inline, 5 at most
+            self.assertIn("(playbook, verified 2026-09-25): step 1: venv/bin/python -m pytest\n  - step 2: ", out)
+            self.assertIn("  - step 5: ", out)
+            self.assertNotIn("step 6", out)
+            self.assertLessEqual(len(out.splitlines()), 15)
         finally:
             book.unlink()
 
@@ -903,6 +911,12 @@ class TestSessions(Sandbox):
         self.assertEqual(self.hook("prompt", {**ask, "cwd": str(self.V), "session_id": "vault-sess"}).stdout, "")
         self.assertIn("[[Payments API]]", self.hook("session-start", {"cwd": str(self.repo), "session_id": "s2"}).stdout)
         self.assertEqual(self.hook("prompt", {**ask, "session_id": "s2"}).stdout, "")  # shown at start already
+        # a subagent's report or a task notice is not the owner asking: no pages, and none used up for the session
+        for machine in (f"Another session sent a message:\n<agent-message from=\"a1\">{ask['prompt']}</agent-message>",
+                        f"<task-notification><result>{ask['prompt']}</result></task-notification>",
+                        f"<system-reminder id=\"r1\">{ask['prompt']}</system-reminder>\nrename the button"):
+            self.assertEqual(self.hook("prompt", {**ask, "session_id": "s3", "prompt": machine}).stdout, "")
+        self.assertIn("[[Payments API]]", self.hook("prompt", {**ask, "session_id": "s3"}).stdout)
         self.assertEqual(self.git("check-ignore", "-q", ".memex/shown/s2").returncode, 0)  # machine-local
 
     def test_codex_prompt_event_uses_shared_recall_and_limits(self):
@@ -987,6 +1001,38 @@ class TestSessions(Sandbox):
             for p in (bench, record, report):
                 if p.exists():
                     p.unlink()
+
+    def test_audit_lists_missed_queries_unopened_recall_and_most_opened_files(self):
+        proj = self.tmp / "cc-hot" / "-code-payments-api"
+        proj.mkdir(parents=True, exist_ok=True)
+        recall = "## Memex: what the owner's knowledge base says about `payments-api`\n- [[Payments API]] (system): x"
+        for i in range(5):
+            sid, cwd = f"hot-{i}", str(self.repo)
+            calls = [("Bash", {"command": "sed -n '1,40p' src/app.py && cat https://example.com/x.py README"}),
+                     ("Read", {"file_path": str(self.repo / "src" / "app.py")}),
+                     ("Read", {"file_path": "/etc/hosts.json"}),
+                     ("Bash", {"command": "memex search refund window"})]
+            lines = [{"type": "attachment", "sessionId": sid, "cwd": cwd, "timestamp": "2026-10-05T10:00:00Z",
+                      "attachment": {"type": "hook_success", "hookName": "SessionStart:startup", "content": recall}}]
+            for j, (name, inp) in enumerate(calls):
+                tid = f"{sid}-t{j}"
+                res = "No matches for 'refund window' in wiki, inbox/. Try synonyms" if "memex" in str(inp) else "ok"
+                lines += [{"type": "assistant", "sessionId": sid, "cwd": cwd, "timestamp": f"2026-10-05T10:{10 + j}:00Z",
+                           "message": {"id": f"{sid}-m{j}", "content": [{"type": "tool_use", "id": tid, "name": name, "input": inp}]}},
+                          {"type": "user", "sessionId": sid, "cwd": cwd, "timestamp": f"2026-10-05T10:{10 + j}:30Z",
+                           "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid, "content": res}]}}]
+            (proj / f"{sid}.jsonl").write_text("".join(json.dumps(l) + "\n" for l in lines))
+        env = {**self.env, "MEMEX_TRANSCRIPTS": str(self.tmp / "cc-hot")}
+        r = self.memex("audit", "--since", "2026-10-05", "--until", "2026-10-05", "--json", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        m = json.loads(r.stdout)["metrics"]
+        self.assertEqual(m["zero_hit_queries"], [["refund window", 5]])
+        self.assertEqual(m["recall_unopened"], [["Payments API", 5]])
+        self.assertEqual(m["hot_files"], {"payments-api": {"sessions": 5, "files": [["src/app.py", 5]]}})  # in-repo only
+        out = self.memex("audit", "--since", "2026-10-05", "--until", "2026-10-05", env=env).stdout
+        self.assertIn("- Searched for and not found: 'refund window' (x5)", out)
+        self.assertIn("never opened: [[Payments API]] (5 sessions)", out)
+        self.assertIn("- payments-api (5 sessions): `src/app.py` (5)", out)
 
     def test_harvest_skip_captured(self):
         ledger = self.V / ".memex/sessions.jsonl"
