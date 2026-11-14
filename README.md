@@ -1,6 +1,6 @@
 # Memex
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/G-aUr-aV/Memex)
+[![Ask DeepWiki](https://img.shields.io/badge/Ask-DeepWiki-4B32C3)](https://deepwiki.com/G-aUr-aV/Memex)
 
 **A framework for a personal LLM Wiki, based on [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f).** AI agents (Claude Code, Codex or Hermes) write and maintain an Obsidian vault from your sources, with cited claims, guardrail hooks, a lint, and daily and weekly routines.
 
